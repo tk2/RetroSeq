@@ -9,7 +9,12 @@
 Status: 
 Should work and compile
 Test: validation and genotyping steps
-Todo:
+
+Issues/improvements:
+The BAM could be required to be sorted by readname before input
+    - this would mean that you could get the candidate reads from a single pass through
+    - drawback is that for further stages you need the BAM sorted by coordinate
+    - for big projects, it would be extra effort to pre-sort by name
 Calling of heterozygotes is not handled right now
 =cut
 
@@ -35,13 +40,7 @@ my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 2000;
 my $GENOTYPE_READS_WINDOW = 5000;
 
-#-validation fixed values
-my $WINDOW_SIZE = 600;
-my $MIN_HIT_LENGTH = 25;
-my $MIN_BREAK_SIZE = 25;
-my $MIN_DIST_TO_BREAK = 50;
-
-my $HEADER = qq[#retroseq v$VERSION\n#START_CANDIDATES];
+my $HEADER = qq[#retroseq v:$VERSION\n#START_CANDIDATES];
 my $FOOTER = qq[#END_CANDIDATES];
 
 my $BAMFLAGS = 
@@ -62,7 +61,7 @@ my $BAMFLAGS =
 #TESTING
 #_outputCalls('18369.refined_calls.4.tab', 'H12', '/lustre/scratch102/projects/mouse/ref/NCBIM37_um.fa', 'test.vcf');
 #exit;
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRef, $length, $id, $output, $anchorQ, $input, $reads, $depth, $cleanup, $chr, $tmpdir, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $input, $reads, $depth, $cleanup, $chr, $tmpdir, $help);
 
 GetOptions
 (
@@ -74,7 +73,7 @@ GetOptions
     #parameters
     'bam=s'         =>  \$bam,
     'bams=s'        =>  \$bams,
-    'eref=s'        =>  \$eRef,
+    'eref=s'        =>  \$eRefFofn,
     'ref=s'         =>  \$ref,
     'len=s'         =>  \$length,
     'id=s'          =>  \$id,
@@ -112,11 +111,11 @@ USAGE
 
 if( $discover )
 {
-    ( $bam && $eRef && $output ) or die <<USAGE;
+    ( $bam && $eRefFofn && $output ) or die <<USAGE;
 Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-id <int>] [-len <int> -clean <yes/no>]
     
     -bam        BAM file of paired reads mapped to reference genome
-    -eref       Fasta reference set of transposons
+    -eref       Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta)
     -output     Output file to store candidate supporting reads (required for calling step)
     [-cleanup   Remove intermediate output files (yes/no). Default is yes.]
     [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
@@ -125,21 +124,26 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-i
     
 USAGE
     
-    croak qq[Cant find BAM: $bam] unless -f $bam;
-    croak qq[Cant find TE fasta: $eRef] unless -f $eRef;
+    croak qq[Cant find BAM file: $bam] unless -f $bam;
+    croak qq[Cant find TE tab file: $eRefFofn] unless -f $eRefFofn;
     
-    #$chr = defined( $chr ) ? $chr : 'all';
+    my $erefs = _tab2Hash( $eRefFofn );
+    foreach my $type ( keys( %{$erefs} ) )
+    {
+        if( ! -f $$erefs{$type} ){croak qq[Cant find transposon reference file: ].$$erefs{ $type };}
+    }
+    
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
     $id = defined( $id ) && $id < 101 && $id > 0 ? $id : $DEFAULT_ID;
     $length = defined( $length ) && $length > 25 ? $length : $DEFAULT_LENGTH;
     my $clean = defined( $cleanup ) && $cleanup eq 'no' ? 0 : 1;
     
     print qq[\nMin anchor quality: $anchorQ\nMin percent identity: $id\nMin length for hit: $length\n\n];
-
+    
     #test for samtools
     _checkBinary( q[samtools] );
     
-    _findCandidates( $bam, $eRef, $id, $length, $anchorQ, $output, $clean );
+    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $clean );
 }
 elsif( $call )
 {
@@ -150,7 +154,7 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-c
     -input          Either a single output file from the dicover stage OR a file of file names (e.g. output from multiple lanes)
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
-    [-depth         It is the minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
+    [-depth         .....]
     [-reads         It is the minimum number of reads required to make a call. Default is 5. Parameter is optional.]
     [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
     [-cleanup       Remove intermediate output files (yes/no). Default is yes.]
@@ -175,7 +179,7 @@ USAGE
 }
 elsif( $genotype )
 {
-    ( $bams && $input && $eRef && $reads && $cleanup && $tmpdir && $output ) or die <<USAGE;
+    ( $bams && $input && $eRefFofn && $reads && $cleanup && $tmpdir && $output ) or die <<USAGE;
 Usage: $0 -genotype -bams <string> -input <string> -eref <string> -output <string> [-cleanup -reads <int> -chr <string> -tmpdir <string>]
     
     -bams           File of BAM file names (one per sample to be genotyped)
@@ -194,7 +198,7 @@ USAGE
     
     croak qq[Cant find BAM fofn: $bams] unless -f $bams;
     croak qq[Cant find input: $input] unless -f $input;
-    croak qq[Cant find TE reference genome fasta: $eRef] unless -f $eRef;
+    croak qq[Cant find TE tab file: $eRefFofn] unless -f $eRefFofn;
     
     my $clean = defined( $cleanup ) && $cleanup eq 'no' ? 0 : 1;
     $reads = defined( $reads ) && $reads =~ /^\d+$/ ? $reads > -1 : $DEFAULT_MIN_GENOTYPE_READS;
@@ -215,7 +219,7 @@ else
 sub _findCandidates
 {
     my $bam = shift;
-    my $eref = shift;
+    my $erefs = shift;
     my $id = shift;
     my $length = shift;
     my $minAnchor = shift;
@@ -224,17 +228,22 @@ sub _findCandidates
     
     #test for ssaha2
     _checkBinary( q[ssaha2] );
+    #_checkBinary( q[exonerate] );
     
-    my %candidates = %{ _getCandidateTEReadNames($bam, undef, undef, undef, $minAnchor ) };
+    my $candidatesFasta = qq[$$.candidates.fasta];
+    my $candidatesBed = qq[$$.candidate_anchors.bed];
+    my %candidates = %{ _getCandidateTEReadNames($bam, undef, undef, undef, $minAnchor, $candidatesFasta, $candidatesBed ) };
     
-    open( my $ffh, qq[>$$.candidates.fasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
-    open( my $afh, qq[>$$.candidate_anchors.bed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
+    print scalar( keys( %candidates ) ).qq[ candidate reads remain to be found after first pass....\n];
+    
+    open( my $ffh, qq[>>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
+    open( my $afh, qq[>>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
     
     #now go and get the reads from the bam (annoying have to traverse through the bam a second time - but required for reads where the mate is aligned distantly)
     #also dump out their mates as will need these later as anchors
     open( my $bfh, qq[samtools view $bam |] ) or die $!;
     my $currentChr = '';
-    while( my $sam = <$bfh> ) 
+    while( my $sam = <$bfh> )
     {
         chomp( $sam );
         my @s = split( /\t/, $sam );
@@ -249,12 +258,6 @@ sub _findCandidates
                 my $seq = $s[ 9 ];
                 print $ffh qq[>$name\n$seq\n];
             }
-            else #this is a potentially anchoring mate so print it out in BED
-            {
-                my $pos = $s[ 3 ];
-                my $rl = length( $s[ 9 ] );
-                print $afh qq[$ref\t$pos\t].($pos+$rl).qq[\t$name\n];
-            }
         }
         if( $currentChr ne $ref ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
     }
@@ -263,41 +266,48 @@ sub _findCandidates
     
     undef %candidates; #finished with this hash
     
-    my $soutput = qq[$$.candidates.fasta.out];
-    print qq[\nAligning candidate read sequences against transposon reference....\n];
-    _run_ssaha2( $eRef, qq[$$.candidates.fasta], $soutput ) or die qq[Failed to run ssaha function\n];
-	
-    print qq[Parsing alignments....\n];
-    my %anchors;
-	open( my $sfh, $soutput ) or die qq[Failed to open ssaha output file: $!];
-	while( <$sfh> )
-	{
-	    chomp;
-	    next unless $_ =~ /^ALIGNMENT/;
-	    my @s = split( /\s+/, $_ );
-	    #    check min identity	  check min length
-	    if( $s[ 10 ] >= $id && $s[ 9 ] >= $length && ! $anchors{ $s[ 2 ] } )
-	    {
-	        $anchors{ $s[ 2 ] } = $s[ 8 ] eq 'F' ? '+' : '-';
-	    }
-	}
-	close( $sfh );
-	
-	#filter the BED file of anchor candidates to produce the final anchors file
+    #filter the BED file of anchor candidates to produce the final anchors file
 	open( $afh, qq[>$output] ) or die $!;
 	print $afh qq[$HEADER\n];
-	open( my $cfh, qq[$$.candidate_anchors.bed] ) or die $!;
-	while( <$cfh> )
-	{
-	    chomp;
-	    my @s = split( /\t/, $_ );
-	    if( $anchors{ $s[ 3 ] } )
-	    {
-	        print $afh qq[$_\n];
-	    }
+    foreach my $type ( keys( %{ $erefs } ) )
+    {
+        my $soutput = qq[$$.candidates.fasta.out];
+        print qq[\nAligning candidate read sequences against $type transposon reference....\n];
+        
+        _run_ssaha2( $$erefs{ $type }, qq[$$.candidates.fasta], $soutput ) or die qq[Failed to run ssaha function\n];
+        
+        print qq[Parsing alignments....\n];
+        
+        print $afh qq[TE_TYPE_START $type\n];
+        my %anchors;
+        open( my $sfh, $soutput ) or die qq[Failed to open ssaha output file: $!];
+        while( <$sfh> )
+        {
+            chomp;
+            next unless $_ =~ /^ALIGNMENT/;
+            my @s = split( /\s+/, $_ );
+            #    check min identity	  check min length
+            if( $s[ 10 ] >= $id && $s[ 9 ] >= $length && ! $anchors{ $s[ 2 ] } )
+            {
+                $anchors{ $s[ 2 ] } = $s[ 8 ] eq 'F' ? '+' : '-';
+            }
+        }
+        close( $sfh );
+        
+        open( my $cfh, qq[$$.candidate_anchors.bed] ) or die $!;
+        while( <$cfh> )
+        {
+            chomp;
+            my @s = split( /\t/, $_ );
+            if( $anchors{ $s[ 3 ] } )
+            {
+                print $afh qq[$_\n];
+            }
+        }
+        close( $cfh );
+        print $afh qq[TE_TYPE_END $type\n];
 	}
 	print $afh qq[$FOOTER\n]; #write an end of file marker
-	close( $cfh );
 	close( $afh );
 	
 	if( $clean )
@@ -313,96 +323,70 @@ sub _findInsertions
     my $input = shift;
     my $ref = shift;
     my $output = shift;
-    my $reads = shift;
+    my $minReads = shift;
     my $depth = shift;
     my $minQ = shift;
     my $clean = shift;
     
     _checkBinary( 'sort' ); #sort cmd required
     
-    #read in all the files
-    open( my $ifh, $input ) or die qq[Failed to open input file: $input\n];
-    my $line = <$ifh>;chomp( $line );
-    my $tempUnsorted = qq[$$.unsort_reads.bed];
-    open( my $tfh, qq[>$tempUnsorted] ) or die qq[Failed to create temporary reads file\n];
-    if( $line !~ /^#/ )
-    {
-        seek $ifh, 0, 0; #reset file handle
-        while( <$ifh> )
-        {
-            chomp;
-            my $fileName = $_;
-            if( ! -f $fileName ){die qq[Input file does not contain file of file names. Cant find file: $fileName\n];}
-            
-            #check the eof markers are there from the discovery stage
-            _checkDiscoveryOutput( $fileName );
-            
-            open( my $ffh, $fileName ) or die qq[Failed to open input file $fileName: $!];
-            while( <$ffh> )
-            {
-                chomp;
-                next unless $_ !~ /^#/;
-                print $tfh qq[$_\n];
-            }
-        }
-    }
-    else
-    {
-        #check the eof markers are there from the discovery stage
-        _checkDiscoveryOutput( $input );
-        
-        while( <$ifh> )
-        {
-            chomp;
-            next unless $_ !~ /^#/;
-            print $tfh qq[$_\n];
-        }
-    }
-    close( $ifh );
-    close( $tfh );
+    #check the eof markers are there from the discovery stage
+    _checkDiscoveryOutput( $input );
     
-    #get the sample name(s) from the bam
     my $sampleName = _getBAMSampleName( $bam );
     
-    #sort the calls by chr and position
-    my $tempSorted = qq[$output.evidence];
-    _sortBED( $tempUnsorted, $tempSorted );
-    
-    #convert to a region BED
-    print qq[Calling initial rough boundaries of insertions....\n];
-    my $rawTECalls = qq[$$.raw_calls.1.tab];
-    _convertToRegionBED( $tempSorted, $sampleName, $rawTECalls );
-    
-    #remove calls with low supporting reads
-    print qq[Removing calls with low read support....\n];
-    my $rawTECalls1 = qq[$$.raw_calls.2.tab];
-    open( $tfh, $rawTECalls ) or die $!;
-    open( my $lfh, qq[>$rawTECalls1] ) or die $!;
-    while( <$tfh> )
+    #for each type in the file - call the insertions
+    open( my $ifh, $input ) or die $!;
+    my $currentType = '';
+    my $tempUnsorted = qq[$$.reads.0.tab]; #a temporary file to dump out the reads for this TE type
+    my %typeBEDFiles;
+    my $count = 0;
+    my $tfh;
+    while( my $line = <$ifh> )
     {
-        chomp;
-        my @s = split( /\t/, $_ );
-        if( $s[ 4 ] >= $reads )
+        chomp( $line );
+        next if( $line =~ /^#/ );
+        if( $line =~ /^(TE_TYPE_START)(\s+)(.+)$/ )
         {
-            print $lfh qq[$_\n];
+            my $nextType = $3;
+            if( $currentType ne '' )
+            {
+                close( $tfh );
+                print qq[Calling TE type: $currentType\n];
+                
+                #call the insertions
+                my $tempSorted = qq[$$.raw_reads.0.$count.tab];
+                _sortBED( $tempUnsorted, $tempSorted );
+                
+                #convert to a region BED (removing any candidates with very low numbers of reads)
+                print qq[Calling initial rough boundaries of insertions....\n];
+                my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
+                _convertToRegionBED( $tempSorted, $minReads, $sampleName, $rawTECalls1 );
+                
+                #remove extreme depth calls
+                print qq[Removing calls with extremely high depth (>$depth)....\n];
+                my $rawTECalls2 = qq[$$.raw_calls.2.$count.tab];
+                _removeExtremeDepthCalls( $rawTECalls1, $bam, $depth, $rawTECalls2 );
+                
+                #new calling filtering code
+                print qq[Filtering and refining candidate regions into calls....\n];
+                $typeBEDFiles{ $currentType } = qq[$$.raw_calls.3.$count.bed];
+                my $rawTECalls3 = qq[$$.raw_calls.3.$count.bed];
+                _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $rawTECalls3 );
+                $count ++;
+            }
+            $currentType = $nextType;
+            open( $tfh, qq[>$tempUnsorted] ) or die $!;
+        }
+        elsif( $line !~ /^(TE_TYPE_END)/ )
+        {
+            print $tfh qq[$line\n];
         }
     }
-    close( $tfh );
-    
-    #remove extreme depth calls
-    print qq[Removing calls with extremely high depth (>$depth)....\n];
-    my $rawTECalls2 = qq[$$.raw_calls.3.tab];
-    _removeExtremeDepthCalls( $rawTECalls1, $bam, $depth, $rawTECalls2 );
-    
-    #attempt to work out where the breakpoint is
-    print qq[Refining rough calls....\n];
-    my $refinedTECalls = qq[$$.refined_calls.4.tab];
-    #_findBreakPointCoverage( $rawTECalls2, $bam, $depth, $refinedTECalls );
-    _refineBreakPoints( $rawTECalls2, $bam, $depth, $minQ, $ref, $refinedTECalls );
     
     #output calls in VCF format
     print qq[Creating VCF file of calls....\n];
-    _outputCalls( $refinedTECalls, $sampleName, $ref, $output );
+    _outputCalls( \%typeBEDFiles, $sampleName, $ref, $output );
     
     if( $cleanup )
     {
@@ -411,25 +395,32 @@ sub _findInsertions
     }
 }
 
-sub _refineBreakPoints
+=pod
+the new and improved calling code from mouse paper
+takes a BED of rough call regions and refines them into breakpoints and does checking of the supporting
+reads either side
+=cut
+sub _filterCallsBedMinima
 {
+    croak "Usage: filterCallsBed bed_in bam_fofn min_depth min_mapQ ref bed_out" unless @_ == 6;
     my $bedin = shift;
-    my $bam = shift;
-    my $minDepth = shift;
-    my $minMapQ = shift;
-    my $reference = shift;
-    my $outputBED = shift;
-    
-    open( my $ifh, $bedin ) or die $!;
-	open( my $ofh, qq[>$outputBED] ) or die $!;
-	while( <$ifh> )
+	my $bam = shift;
+	my $minDepth = shift;
+	my $minMapQ = shift;
+	my $ref = shift;
+	my $bedout = shift;
+	
+	open( my $ifh, $bedin ) or die $!;
+	open( my $ofh, qq[>$bedout] ) or die $!;
+	open( my $dfh, qq[>$bedout.discard] ) or die $!;
+	while( my $originalCall = <$ifh> )
 	{
-	    chomp;
-	    my $originalCall = $_;
-	    my @originalCallA = split( /\t/, $_ );
+	    chomp( $originalCall );
+	    my @originalCallA = split( /\t/, $originalCall );
 	    my $strain = (split( /\./, $originalCallA[3] ))[ 0 ];
-
+	    
 	    my $start = $originalCallA[ 1 ];my $end = $originalCallA[ 2 ];my $chr = $originalCallA[ 0 ];
+	    
 	    my $mid = int(($start + $end ) / 2);my $regStart = $mid - 600; $regStart = 1 if( $regStart < 1 );my $regEnd = $mid + 600;
 	    
 	    open( my $tfh, qq[samtools view -h -b $bam $chr:$regStart-$regEnd | samtools pileup -c -f $ref - | tail -1100 | head -1000 | ] ) or die $!;
@@ -446,8 +437,8 @@ sub _refineBreakPoints
 	    }
 	    close( $tfh );
 	    
-	    my @res = __local_min_max( %depths );
-	    if( !@res || !$res[ 0 ] ){print qq[WARNING: no max/min returned for $originalCall\n];next;}
+	    my @res = _local_min_max( %depths );
+	    if( !@res || !$res[ 0 ] ){print qq[WARNING: no max/min returned for $originalCall\n];print $dfh qq[$originalCall\n];next;}
 	    my %min = %{$res[ 0 ]};
 	    my @positions = keys( %min );
 	    
@@ -457,6 +448,7 @@ sub _refineBreakPoints
 	    #test each point to see if has the desired signature of fwd / rev pointing reads
 	    my $found = 0;my $tested = 0;
 	    my $lastRefIndex = -1;
+	    my $minRatio = 100000;my $minRatioCall;
 	    while( $tested < 5 )
 	    {
 	        #check the distance to the set tested so far (i.e. dont want to retest with a cluster of local minima)
@@ -467,7 +459,7 @@ sub _refineBreakPoints
 	            my $closeby = 0;
 	            for( my $j = 0; $j < $newIndex; $j ++ )
 	            {#print qq[j: $j\n];
-	                if( abs( $positions[$newIndex] - $positions[ $j ] ) < 100 ){$closeby = 1;last;}
+	                if( abs( $positions[$newIndex] - $positions[ $j ] ) < 50 ){$closeby = 1;last;}
 	            }
 	            #print qq[n1: $newIndex\n];
 	            last if( $closeby == 0 );
@@ -478,43 +470,80 @@ sub _refineBreakPoints
 	        my $depth = $min{$positions[$newIndex]};
 	        my $refPos = $positions[ $newIndex ];
 	        
+	        print qq[$depth\t$refPos\n];
 	        last unless $depth < $minDepth;
 	        
 	        #test to see if lots of rp's either side
-	        my $lhsFwd = 0; my $lhsRev = 0; my $rhsFwd = 0; my $rhsRev = 0;
+	        my $lhsFwdBlue = 0; my $lhsRevBlue = 0; my $rhsFwdBlue = 0; my $rhsRevBlue = 0;
+	        my $lhsFwdGreen = 0; my $lhsRevGreen = 0; my $rhsFwdGreen = 0; my $rhsRevGreen = 0;
+	        
+	        #store the last blue read before the b/point, and first blue read after the b/point
+	        my $lastBluePos = 0;my $firstBluePos = 100000000000;
 	        
 	        #also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
-	        my $cmd = qq[samtools view $bam $chr:].($refPos-300).qq[-].($refPos+300).qq[ | ];
+	        my $cmd = qq[samtools view $bam $chr:].($refPos-450).qq[-].($refPos+450).qq[ | ];
 	        open( $tfh, $cmd ) or die $!;
-	        while( <$tfh> )
+	        print qq[$cmd\n];
+	        while( my $sam = <$tfh> )
 	        {
-	            chomp;
-	            my @s = split( /\t/, $_ );
+	            chomp( $sam );
+	            my @s = split( /\t/, $sam );
 	            next unless $s[ 4 ] > $minMapQ;
-	            if( !( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && ( $s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} || $s[ 2 ] ne $s[ 6 ] ) )
+	            #        the mate is mapped                        not paired correctly                        or mate ref name is different chr
+	            if( !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'}) && ( ( !( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) ) || ( $s[ 6 ] ne '=' ) ) )
 	            {
-	                #print qq[candidate: $s[1]\n];
-	                if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
+	                if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
 	                {
-	                    if( $s[ 3 ] < $refPos ){$lhsRev++;}else{$rhsRev++;}
+	                    if( $s[ 3 ] < $refPos ){$lhsRevBlue++;}else{$rhsRevBlue++;$firstBluePos = $s[ 3 ] if( $s[ 3 ] < $firstBluePos );}
 	                }
 	                else
 	                {
-	                    if( $s[ 3 ] < $refPos ){$lhsFwd++;}else{$rhsFwd++;}
+	                    if( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastBluePos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastBluePos );}else{$rhsFwdBlue++;}
+	                }
+	            }
+	            #        the mate is unmapped
+	            elsif( $s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} )
+	            {
+	                if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
+	                {
+	                    if( $s[ 3 ] < $refPos ){$lhsRevGreen++;}else{$rhsRevGreen++;}
+	                }
+	                else
+	                {
+	                    if( $s[ 3 ] < $refPos ){$lhsFwdGreen++;}else{$rhsFwdGreen++;}
 	                }
 	            }
 	        }
 	        
 	        #check there are supporting read pairs either side of the depth minima
-	        if( $lhsFwd > 5 && $rhsRev > 5 && ( $lhsRev == 0 || $lhsFwd / $lhsRev > 2 ) && ( $rhsFwd == 0 || $rhsRev / $rhsFwd > 2 ) )
+	        my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
+	        my $dist = $firstBluePos - $lastBluePos;
+	        print qq[$refPos\t$depth\t$lhsFwdBlue\t$lhsFwdGreen\t$lhsRevBlue\t$lhsRevGreen\t$rhsFwdBlue\t$rhsFwdGreen\t$rhsRevBlue\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+	        if( $lhsFwdBlue >= 5 && $rhsRevBlue >= 5 && $lhsFwd > 10 && $rhsRev > 10 && ( $lhsRev == 0 || $lhsFwd / $lhsRev > 2 ) && ( $rhsFwd == 0 || $rhsRev / $rhsFwd > 2 ) && $dist < 120 )
 	        {
-	            print $ofh qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\t$originalCallA[ 5 ]\n];
+	            #print $ofh qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\t$originalCallA[ 5 ]\n];
+	            
+	            my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
+	            if( $ratio < $minRatio ){$minRatioCall = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\t$originalCallA[ 5 ]\n];$minRatio = $ratio;}
 	            $found = 1;
-	            last;
+   	            print qq[found $refPos $firstBluePos $lastBluePos $dist $ratio\n];
 	        }
 	        $tested ++;
 	    }
+	    
+	    if( $found == 1 )
+	    {
+	        print qq[called $minRatioCall];
+	        print $ofh $minRatioCall;
+	    }
+	    else
+	    {
+	        print $dfh qq[$originalCall\n];
+	    }
 	}
+	close( $ifh );
+	close( $ofh );
+	close( $dfh );
 }
 
 =pod
@@ -657,8 +686,12 @@ sub _getCandidateTEReadNames
     my $start = shift;
     my $end = shift;
     my $minAnchor = shift;
+    my $candidatesFasta = shift;
+    my $candidatesBed = shift;
     
     my %candidates;
+    open( my $ffh, qq[>>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
+    open( my $afh, qq[>>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
     
     print qq[Opening BAM ($bam) and getting initial set of candidate mates....\n];
     
@@ -666,7 +699,7 @@ sub _getCandidateTEReadNames
     my $currentChr = '';
     while ( my $samLine = <$bfh> )
     {
-        chomp( $samLine );;
+        chomp( $samLine );
         my @sam = split( /\t/, $samLine );
         my $flag = $sam[ 1 ];;
         my $qual = $sam[ 4 ];
@@ -675,6 +708,16 @@ sub _getCandidateTEReadNames
         my $mref = $sam[ 6 ];
         my $rl = length( $sam[ 9 ] );
         
+        if( $candidates{ $name } )
+        {
+            if( ($flag & $$BAMFLAGS{'1st_in_pair'}) && $candidates{ $name } == 1 || ($flag & $$BAMFLAGS{'2nd_in_pair'}) && $candidates{ $name } == 2 )
+            {
+                my $seq = $sam[ 9 ];
+                print $ffh qq[>$name\n$seq\n];
+            }
+            delete( $candidates{ $name } );
+        }
+        
         #            read is not a duplicate
         if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $qual >= $minAnchor && $rl >= $length ) #ignore pcr dups
         {
@@ -682,11 +725,19 @@ sub _getCandidateTEReadNames
             if( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ( $flag & $$BAMFLAGS{'mate_unmapped'} ) )
             {
                $candidates{ $name } = $flag & $$BAMFLAGS{'1st_in_pair'} ? 2 : 1; #mate is recorded
+               
+               my $pos = $sam[ 3 ];
+               my $rl = length( $sam[ 9 ] );
+               print $afh qq[$ref\t$pos\t].($pos+$rl).qq[\t$name\n];
             }
             #            read is mapped                      mate is mapped                                  not paired correctly
             elsif( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag && $$BAMFLAGS{'read_paired'} ) && $mref ne '=' )
             {
                $candidates{ $name } = $flag & $$BAMFLAGS{'1st_in_pair'} ? 2 : 1; #mate is recorded
+               
+               my $pos = $sam[ 3 ];
+               my $rl = length( $sam[ 9 ] );
+               print $afh qq[$ref\t$pos\t].($pos+$rl).qq[\t$name\n];
             }
         }
         if( $currentChr ne $ref ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
@@ -699,18 +750,30 @@ sub _getCandidateTEReadNames
 sub _getBAMSampleName
 {
     my $bam = shift;
-
-    my @samples;
+    
+    my %samples;
     open( my $bfh, qq[samtools view -H $bam |] );
     while( my $line = <$bfh> )
     {
         chomp( $line );
         next unless $line =~ /^\@RG/;
         my @s = split(/\t/, $line );
-        if( $s[ 6 ] && $s[ 6 ] =~ /^(SM):(\w+)/ ){push(@samples, $2 );}
+        if( $s[ 6 ] && $s[ 6 ] =~ /^(SM):(\w+)/ && ! $samples{ $2 } ){$samples{ $2 } = 1;}
     }
     
-    return @samples && @samples > 0 ? join( "_", @samples ) : undef; #if multiple samples - join the names into a string
+    my $sampleName = 'unknown';
+    if( %samples && keys( %samples ) > 0 )
+    {
+        $sampleName = join( "_", keys( %samples ) ); #if multiple samples - join the names into a string
+        print qq[Found sample: $sampleName\n];
+    }
+    else
+    {
+        print qq[WARNING: Cant determine sample name from BAM - setting to unknown\n];
+        $sampleName = 'unknown';
+    }
+    
+    return $sampleName; 
 }
 
 sub _checkDiscoveryOutput
@@ -731,7 +794,7 @@ sub _checkDiscoveryOutput
 #input is a list of samples and a bed file, output is a VCF + BED file of calls
 sub _outputCalls
 {
-    my $calls = shift; #BED/tab format
+    my $t = shift; my %typeBedFiles = %{$t}; #BED/tab format
     my $sample = shift;
     my $reference = shift;
     my $output = shift;
@@ -744,42 +807,47 @@ sub _outputCalls
     my $header = _getVcfHeader($vcf_out);
     print $vfh $header;
     
-    open( my $cfh, $calls ) or die qq[Failed to open TE calls file: $calls\n];
-    while( <$cfh> )
+    foreach my $type ( keys( %typeBedFiles ) )
     {
-        chomp;
-        my @s = split( /\t/, $_ );
-        
-        my $pos = int( ( $s[ 1 ] + $s[ 2 ] ) / 2 );
-        my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
-        my $ci1 = $s[ 1 ] - $pos;
-        my $ci2 = $s[ 2 ] - $pos;
-        
-        my %out;
-        $out{CHROM}  = $s[ 0 ];
-        $out{POS}    = $pos;
-        $out{ID}     = '.';
-        $out{ALT}    = [];
-        $out{REF}    = $refbase;
-        $out{QUAL}   = $s[ 4 ];
-        $out{FILTER} = ['NOT_VALIDATED'];
-        if( $ci1 < 0 || $ci2 > 1 )
+        die qq[Cant find BED file for type: $type\n] if( ! -f $typeBedFiles{ $type } );
+
+        open( my $cfh, $typeBedFiles{ $type } ) or die qq[Failed to open TE calls file: ].$typeBedFiles{ $type }.qq[\n];
+        while( <$cfh> )
         {
-            $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', CIPOS=>"$ci1,$ci2", NOT_VALIDATED=>undef };
+            chomp;
+            my @s = split( /\t/, $_ );
+            
+            my $pos = int( ( $s[ 1 ] + $s[ 2 ] ) / 2 );
+            my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
+            my $ci1 = $s[ 1 ] - $pos;
+            my $ci2 = $s[ 2 ] - $pos;
+            
+            my %out;
+            $out{CHROM}  = $s[ 0 ];
+            $out{POS}    = $pos;
+            $out{ID}     = '.';
+            $out{ALT}    = [];
+            $out{REF}    = $refbase;
+            $out{QUAL}   = $s[ 4 ];
+            $out{FILTER} = ['NOT_VALIDATED'];
+            if( $ci1 < 0 || $ci2 > 1 )
+            {
+                $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', CIPOS=>"$ci1,$ci2", NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+            }
+            else
+            {
+                $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+            }
+            $out{FORMAT} = ['GT'];
+            
+            $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>/<INS:ME>];
+            $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
+            
+            $vcf_out->format_genotype_strings(\%out);
+            print $vfh $vcf_out->format_line(\%out);
         }
-        else
-        {
-            $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', NOT_VALIDATED=>undef };
-        }
-        $out{FORMAT} = ['GT'];
-        
-        $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>/<INS:ME>];
-        $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
-        
-        $vcf_out->format_genotype_strings(\%out);
-        print $vfh $vcf_out->format_line(\%out);
+        close( $cfh );
     }
-    close( $cfh );
     close( $vfh );
 }
 
@@ -827,6 +895,7 @@ sub _removeExtremeDepthCalls
 sub _convertToRegionBED
 {
 	my $calls = shift;
+	my $minReads = shift;
 	my $id = shift;
 	my $outputbed = shift;
 	
@@ -856,7 +925,7 @@ sub _convertToRegionBED
 			my @s1 = split( /\t/, $lastEntry );
 			$regionEnd = $s1[ 1 ];
 			my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
-			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n";
+			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
 			
 			$reads_in_region = 1;
 			$regionStart = $s[ 1 ];
@@ -871,7 +940,7 @@ sub _convertToRegionBED
 			my @s1 = split( /\t/, $lastEntry );
 			$regionEnd = $s1[ 1 ];
 			my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
-			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n";
+			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
 			
 			$reads_in_region = 1;
 			$regionStart = $s[ 1 ];
@@ -893,7 +962,8 @@ sub _convertToRegionBED
 		$lastEntry = $_;
 	}
 	my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
-	print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n";
+	
+	print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
 	close( $cfh );
 	close( $ofh );
 	
@@ -951,6 +1021,9 @@ sub _getVcfHeader
     
     ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
     $vcf_out->add_header_line( {key=>'INFO',ID=>'SVTYPE',Number=>'1',Type=>'String', Description=>'Type of structural variant'} );
+    
+    ##INFO=<ID=MEINFO,Number=4,Type=String,Description="Mobile element info of the form NAME,START,END,POLARITY">
+    $vcf_out->add_header_line( {key=>'INFO',ID=>'MEINFO',Number=>'4',Type=>'String', Description=>'Mobile element info of the form NAME,START,END,POLARITY'} );
     
     ##ALT=<ID=INS:ME,Description="Insertion of a mobile element">
     $vcf_out->add_header_line( {key=>'ALT', ID=>'INS:ME', Type=>'String', Description=>"Insertion of a mobile element"} );
@@ -1023,4 +1096,21 @@ sub _local_min_max
     $maxima{ $positions[ -1 ] } = $depths{ $positions[ -1 ] } if $prev_cmp >= 0;
     
     return (\%minima, \%maxima);
+}
+
+sub _tab2Hash
+{
+    my $file = shift;
+    
+    my %hash;
+    open( my $tfh, $file ) or die $!;
+    while( my $entry = <$tfh> )
+    {
+        chomp( $entry );
+        die qq[Tab file should have entries separated by single tab: $file\n] unless $entry =~ /^(.+)(\t)(.+)$/;
+        $hash{ $1 } = $3;
+    }
+    close( $tfh );
+    
+    return \%hash;
 }
