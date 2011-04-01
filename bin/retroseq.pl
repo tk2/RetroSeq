@@ -58,9 +58,6 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-#TESTING
-#_outputCalls('18369.refined_calls.4.tab', 'H12', '/lustre/scratch102/projects/mouse/ref/NCBIM37_um.fa', 'test.vcf');
-#exit;
 my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $input, $reads, $depth, $cleanup, $chr, $tmpdir, $help);
 
 GetOptions
@@ -227,8 +224,7 @@ sub _findCandidates
     my $clean = shift;
     
     #test for ssaha2
-    _checkBinary( q[ssaha2] );
-    #_checkBinary( q[exonerate] );
+    _checkBinary( q[exonerate] );
     
     my $candidatesFasta = qq[$$.candidates.fasta];
     my $candidatesBed = qq[$$.candidate_anchors.bed];
@@ -274,25 +270,31 @@ sub _findCandidates
         my $soutput = qq[$$.candidates.fasta.out];
         print qq[\nAligning candidate read sequences against $type transposon reference....\n];
         
-        _run_ssaha2( $$erefs{ $type }, qq[$$.candidates.fasta], $soutput ) or die qq[Failed to run ssaha function\n];
+        my $ref = $$erefs{ $type };
+        die qq[Cant find reference sequence for type: $type\n] if( ! -f $ref );
+        open( my $efh, qq[exonerate --ryo "INFO: %qi %qal %pi %tS\n" $$.candidates.fasta $ref | egrep "INFO|completed" | ] ) or die "Failed to run exonerate alignments: $!";
         
         print qq[Parsing alignments....\n];
         
         print $afh qq[TE_TYPE_START $type\n];
         my %anchors;
-        open( my $sfh, $soutput ) or die qq[Failed to open ssaha output file: $!];
-        while( <$sfh> )
+        my $lastLine;
+        while( my $line = <$efh> )
         {
-            chomp;
-            next unless $_ =~ /^ALIGNMENT/;
-            my @s = split( /\s+/, $_ );
+            chomp( $line );
+            $lastLine = $line;
+            last if ( $line =~ /^-- completed/ );
+            
+            my @s = split( /\s+/, $line );
             #    check min identity	  check min length
-            if( $s[ 10 ] >= $id && $s[ 9 ] >= $length && ! $anchors{ $s[ 2 ] } )
+            if( $s[ 3 ] >= $id && $s[ 2 ] >= $length && ! $anchors{ $s[ 1 ] } )
             {
-                $anchors{ $s[ 2 ] } = $s[ 8 ] eq 'F' ? '+' : '-';
+                $anchors{ $s[ 1 ] } = $s[ 4 ];
             }
         }
-        close( $sfh );
+        close( $efh );
+        
+        if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[Alignment did not complete correctly: $type\n];}
         
         open( my $cfh, qq[$$.candidate_anchors.bed] ) or die $!;
         while( <$cfh> )
@@ -342,6 +344,7 @@ sub _findInsertions
     my %typeBEDFiles;
     my $count = 0;
     my $tfh;
+    my $raw_candidates = qq[$output.candidates];
     while( my $line = <$ifh> )
     {
         chomp( $line );
@@ -361,18 +364,18 @@ sub _findInsertions
                 #convert to a region BED (removing any candidates with very low numbers of reads)
                 print qq[Calling initial rough boundaries of insertions....\n];
                 my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
-                _convertToRegionBED( $tempSorted, $minReads, $sampleName, $rawTECalls1 );
+                _convertToRegionBED( $tempSorted, $minReads, $currentType.qq[_].$sampleName, $rawTECalls1 );
                 
                 #remove extreme depth calls
                 print qq[Removing calls with extremely high depth (>$depth)....\n];
                 my $rawTECalls2 = qq[$$.raw_calls.2.$count.tab];
-                _removeExtremeDepthCalls( $rawTECalls1, $bam, $depth, $rawTECalls2 );
+                _removeExtremeDepthCalls( $rawTECalls1, $bam, $depth, $rawTECalls2, $raw_candidates );
                 
                 #new calling filtering code
                 print qq[Filtering and refining candidate regions into calls....\n];
                 $typeBEDFiles{ $currentType } = qq[$$.raw_calls.3.$count.bed];
                 my $rawTECalls3 = qq[$$.raw_calls.3.$count.bed];
-                _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $rawTECalls3 );
+                _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $rawTECalls3, $raw_candidates );
                 $count ++;
             }
             $currentType = $nextType;
@@ -402,17 +405,17 @@ reads either side
 =cut
 sub _filterCallsBedMinima
 {
-    croak "Usage: filterCallsBed bed_in bam_fofn min_depth min_mapQ ref bed_out" unless @_ == 6;
     my $bedin = shift;
 	my $bam = shift;
 	my $minDepth = shift;
 	my $minMapQ = shift;
 	my $ref = shift;
 	my $bedout = shift;
+	my $thrown_out_file = shift;
 	
 	open( my $ifh, $bedin ) or die $!;
 	open( my $ofh, qq[>$bedout] ) or die $!;
-	open( my $dfh, qq[>$bedout.discard] ) or die $!;
+	open( my $dfh, qq[>>$thrown_out_file] ) or die $!;
 	while( my $originalCall = <$ifh> )
 	{
 	    chomp( $originalCall );
@@ -538,7 +541,7 @@ sub _filterCallsBedMinima
 	    }
 	    else
 	    {
-	        print $dfh qq[$originalCall\n];
+	        print $dfh qq[$originalCallA[ 0 ]\t$originalCallA[ 1 ]\t$originalCallA[ 2 ]\t$originalCallA[3]_filter\t$originalCallA[ 4 ]\n];
 	    }
 	}
 	close( $ifh );
@@ -858,9 +861,11 @@ sub _removeExtremeDepthCalls
 	my $bam = shift;
 	my $maxDepth = shift;
 	my $outputbed = shift;
+	my $thrown_out_candidates_file = shift;
 	
 	open( my $cfh, $calls ) or die $!;
 	open( my $ofh, ">$outputbed" ) or die $!;
+	open( my $rfh, qq[>>$thrown_out_candidates_file] ) or die $!;
 	while( <$cfh> )
 	{
 		chomp;
@@ -871,6 +876,8 @@ sub _removeExtremeDepthCalls
 		my $end = $s[ 2 ] + 100;
 		my $size = $end - $start;
 		my $chr = $s[ 0 ];
+		my $label = $s[ 3 ];
+		my $score = $s[ 4 ];
 		
 		#get the avg depth over the region
 		my $totalDepth = `samtools view -h $bam $chr:$start-$end | samtools pileup -S - |  awk -F"\t" '{SUM += \$4} END {print SUM}'`;chomp( $totalDepth );
@@ -881,11 +888,13 @@ sub _removeExtremeDepthCalls
 		}
 		else
 		{
-		    print "Excluding call due to high depth: $_ AvgDepth: $avgDepth\n"
+		    print "Excluding call due to high depth: $_ AvgDepth: $avgDepth\n";
+		    print $rfh qq[$chr\t$start\t$end\t$label\_depth$avgDepth\t$score\n];
 		}
 	}
 	close( $cfh );
 	close( $ofh );
+	close( $rfh );
 	
 	return 1;
 }
