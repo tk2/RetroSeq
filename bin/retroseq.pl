@@ -262,6 +262,10 @@ sub _findCandidates
     
     undef %candidates; #finished with this hash
     
+    #write out a single merged fasta
+    my $mergedRefFasta = qq[$$.merged_ref.fasta];
+    _writeMergedFasta( $erefs, $mergedRefFasta );
+    
     #filter the BED file of anchor candidates to produce the final anchors file
 	open( $afh, qq[>$output] ) or die $!;
 	print $afh qq[$HEADER\n];
@@ -272,7 +276,7 @@ sub _findCandidates
         
         my $ref = $$erefs{ $type };
         die qq[Cant find reference sequence for type: $type\n] if( ! -f $ref );
-        open( my $efh, qq[exonerate --ryo "INFO: %qi %qal %pi %tS\n" $$.candidates.fasta $ref | egrep "INFO|completed" | ] ) or die "Failed to run exonerate alignments: $!";
+        open( my $efh, q[exonerate --ryo "INFO: %qi %qal %pi %tS\n" ].qq[$$.candidates.fasta $ref | egrep "INFO|completed" | ] ) or die "Failed to run exonerate alignments: $!";
         
         print qq[Parsing alignments....\n];
         
@@ -283,7 +287,7 @@ sub _findCandidates
         {
             chomp( $line );
             $lastLine = $line;
-            last if ( $line =~ /^-- completed/ );
+            next unless $line =~ /^INFO/;
             
             my @s = split( /\s+/, $line );
             #    check min identity	  check min length
