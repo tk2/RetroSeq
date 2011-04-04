@@ -58,7 +58,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $input, $reads, $depth, $cleanup, $chr, $tmpdir, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $input, $reads, $depth, $noclean, $chr, $tmpdir, $help);
 
 GetOptions
 (
@@ -79,7 +79,7 @@ GetOptions
     'input=s'       =>  \$input,
     'reads=s'       =>  \$reads,
     'depth=s'       =>  \$depth,
-    'cleanup=s'     =>  \$cleanup,
+    'noclean'       =>  \$noclean,
     'chr=s'         =>  \$chr,
     'tmp=s'         =>  \$tmpdir,
     'h|help'        =>  \$help,
@@ -114,7 +114,7 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-i
     -bam        BAM file of paired reads mapped to reference genome
     -eref       Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta)
     -output     Output file to store candidate supporting reads (required for calling step)
-    [-cleanup   Remove intermediate output files (yes/no). Default is yes.]
+    [-noclean   Do not remove intermediate output files. Default is to cleanup.]
     [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
     [-id        Minmum percent ID for a match of a read to the transposon references. Default is 90.]
     [-len       Miniumum length of a hit to the transposon references. Default is 36bp.]
@@ -133,7 +133,7 @@ USAGE
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
     $id = defined( $id ) && $id < 101 && $id > 0 ? $id : $DEFAULT_ID;
     $length = defined( $length ) && $length > 25 ? $length : $DEFAULT_LENGTH;
-    my $clean = defined( $cleanup ) && $cleanup eq 'no' ? 0 : 1;
+    my $clean = defined( $noclean ) ? 0 : 1;
     
     print qq[\nMin anchor quality: $anchorQ\nMin percent identity: $id\nMin length for hit: $length\n\n];
     
@@ -167,7 +167,7 @@ USAGE
     $reads = defined( $reads ) && $reads =~ /^\d+$/ && $reads > -1 ? $reads : $DEFAULT_READS;
     $depth = defined( $depth ) && $depth =~ /^\d+$/ && $depth > -1 ? $depth : $DEFAULT_MAX_DEPTH;
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
-    my $clean = defined( $cleanup ) && $cleanup eq 'no' ? 0 : 1;
+    my $clean = defined( $noclean ) ? 0 : 1;
     
     #test for samtools
     _checkBinary( q[samtools] );
@@ -176,7 +176,7 @@ USAGE
 }
 elsif( $genotype )
 {
-    ( $bams && $input && $eRefFofn && $reads && $cleanup && $tmpdir && $output ) or die <<USAGE;
+    ( $bams && $input && $eRefFofn && $reads && $noclean && $tmpdir && $output ) or die <<USAGE;
 Usage: $0 -genotype -bams <string> -input <string> -eref <string> -output <string> [-cleanup -reads <int> -chr <string> -tmpdir <string>]
     
     -bams           File of BAM file names (one per sample to be genotyped)
@@ -197,7 +197,7 @@ USAGE
     croak qq[Cant find input: $input] unless -f $input;
     croak qq[Cant find TE tab file: $eRefFofn] unless -f $eRefFofn;
     
-    my $clean = defined( $cleanup ) && $cleanup eq 'no' ? 0 : 1;
+    my $clean = defined( $noclean ) ? 0 : 1;
     $reads = defined( $reads ) && $reads =~ /^\d+$/ ? $reads > -1 : $DEFAULT_MIN_GENOTYPE_READS;
     $chr = defined( $chr ) ? $chr : 'all';
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
@@ -252,7 +252,10 @@ sub _findCandidates
             if( ($flag & $$BAMFLAGS{'1st_in_pair'}) && $candidates{ $name } == 1 || ($flag & $$BAMFLAGS{'2nd_in_pair'}) && $candidates{ $name } == 2 )
             {
                 my $seq = $s[ 9 ];
-                print $ffh qq[>$name\n$seq\n];
+                if( _sequenceQualityOK( $seq ) )
+                {
+                    print $ffh qq[>$name\n$seq\n];
+                }
             }
         }
         if( $currentChr ne $ref ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
@@ -262,60 +265,107 @@ sub _findCandidates
     
     undef %candidates; #finished with this hash
     
-    #filter the BED file of anchor candidates to produce the final anchors file
-	open( $afh, qq[>$output] ) or die $!;
+    #create a single fasta file with all the TE ref seqs
+    my %refLabels;
+    my $counter = 0;
+    my $refsFasta = qq[$$.allrefs.fasta];
+    open( my $tfh, qq[>$refsFasta] ) or die $!;
+    foreach my $type ( keys( %{ $erefs } ) )
+    {
+        open( my $sfh, $$erefs{ $type } ) or die $!;
+        my $seqCount = 0;
+        $refLabels{ $type } = $counter;
+        while( my $line = <$sfh>)
+        {
+            chomp( $line );
+            if( $line =~ /^>/ )
+            {
+                print $tfh qq[>$counter\_$seqCount\n];
+                $seqCount ++;
+            }
+            else
+            {
+                print $tfh qq[$line\n];
+            }
+        }
+        close( $sfh );
+        $counter ++;
+    }
+    close( $tfh );
+    
+    #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
+    
+    open( my $efh, q[exonerate --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die "Failed to run exonerate alignments: $!";
+    print qq[Parsing alignments....\n];
+    my $lastLine;
+    my %anchors;
+    while( my $hit = <$efh> )
+    {
+        chomp( $hit );
+        $lastLine = $hit;
+        last if ( $hit =~ /^-- completed/ );
+        
+        my @s = split( /\s+/, $hit );
+        #    check min identity	  check min length
+        if( $s[ 3 ] >= $id && $s[ 2 ] >= $length )
+        {
+            $s[ 5 ] =~ /(\d+)_(\d+)/;
+            $anchors{ $s[ 1 ] } = $1; #this could be a memory issue (possibly dump out to a file and then use unix join to intersect with the bed)
+        }
+    }
+    close( $efh );
+    
+    if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[Alignment did not complete correctly\n];}
+    
+    #setup filehandles for the various TE types
+    my %TE_fh;
+    foreach my $type ( keys( %{ $erefs } ) )
+    {
+        my $id = $refLabels{ $type };
+        open( my $tfh, qq[>$$.$id.candidates] ) or die $!;
+        $TE_fh{ $refLabels{ $type } } = $tfh; #keys are the IDs of the types
+    }
+    
+    #now run through the anchors file and pull out the locations of the anchors
+    open( my $cfh, qq[$$.candidate_anchors.bed] ) or die $!;
+    while( my $anchor = <$cfh> )
+    {
+        chomp( $anchor );
+        my @s = split( /\t/, $anchor );
+        if( $anchors{ $s[ 3 ] } )
+        {
+            my $fh = $TE_fh{ $anchors{ $s[ 3 ] } }; #get the ID of the type the read was aligned to
+            print $fh qq[$anchor\n];
+        }
+    }
+    close( $cfh );
+    
+    foreach my $type ( keys( %TE_fh ) )
+    {
+        close( $TE_fh{ $type } );
+    }
+    
+    #now put all the anchors together into a single file per type
+    open( $afh, qq[>$output] ) or die $!;
 	print $afh qq[$HEADER\n];
     foreach my $type ( keys( %{ $erefs } ) )
     {
-        my $soutput = qq[$$.candidates.fasta.out];
-        print qq[\nAligning candidate read sequences against $type transposon reference....\n];
-        
-        my $ref = $$erefs{ $type };
-        die qq[Cant find reference sequence for type: $type\n] if( ! -f $ref );
-        open( my $efh, qq[exonerate --ryo "INFO: %qi %qal %pi %tS\n" $$.candidates.fasta $ref | egrep "INFO|completed" | ] ) or die "Failed to run exonerate alignments: $!";
-        
-        print qq[Parsing alignments....\n];
-        
+        my $id = $refLabels{ $type };
+        open( my $tfh, qq[$$.$id.candidates] ) or die $!;
         print $afh qq[TE_TYPE_START $type\n];
-        my %anchors;
-        my $lastLine;
-        while( my $line = <$efh> )
+        while( my $line = <$tfh> )
         {
-            chomp( $line );
-            $lastLine = $line;
-            last if ( $line =~ /^-- completed/ );
-            
-            my @s = split( /\s+/, $line );
-            #    check min identity	  check min length
-            if( $s[ 3 ] >= $id && $s[ 2 ] >= $length && ! $anchors{ $s[ 1 ] } )
-            {
-                $anchors{ $s[ 1 ] } = $s[ 4 ];
-            }
+            print $afh qq[$line];
         }
-        close( $efh );
-        
-        if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[Alignment did not complete correctly: $type\n];}
-        
-        open( my $cfh, qq[$$.candidate_anchors.bed] ) or die $!;
-        while( <$cfh> )
-        {
-            chomp;
-            my @s = split( /\t/, $_ );
-            if( $anchors{ $s[ 3 ] } )
-            {
-                print $afh qq[$_\n];
-            }
-        }
-        close( $cfh );
         print $afh qq[TE_TYPE_END $type\n];
-	}
-	print $afh qq[$FOOTER\n]; #write an end of file marker
+    }
+    print $afh qq[$FOOTER\n]; #write an end of file marker
 	close( $afh );
 	
 	if( $clean )
 	{
 	    #delete the intermediate files
-	    unlink( glob( qq[$$.*] ) );
+	    unlink( glob( qq[$$.*] ) ) or die qq[Failed to remove intermediate files: $!];
 	}
 }
 
@@ -391,11 +441,11 @@ sub _findInsertions
     print qq[Creating VCF file of calls....\n];
     _outputCalls( \%typeBEDFiles, $sampleName, $ref, $output );
     
-    if( $cleanup )
-    {
-        #clean up temporary files
-        unlink( glob('$$.') ) or die qq[Failed to cleanup temporary files: $!];
-    }
+	if( $clean )
+	{
+	    #delete the intermediate files
+	    unlink( glob( qq[$$.*] ) ) or die qq[Failed to remove intermediate files: $!];
+	}
 }
 
 =pod
@@ -716,7 +766,11 @@ sub _getCandidateTEReadNames
             if( ($flag & $$BAMFLAGS{'1st_in_pair'}) && $candidates{ $name } == 1 || ($flag & $$BAMFLAGS{'2nd_in_pair'}) && $candidates{ $name } == 2 )
             {
                 my $seq = $sam[ 9 ];
-                print $ffh qq[>$name\n$seq\n];
+                
+                if( _sequenceQualityOK( $seq ) )
+                {
+                    print $ffh qq[>$name\n$seq\n];
+                }
             }
             delete( $candidates{ $name } );
         }
@@ -889,7 +943,7 @@ sub _removeExtremeDepthCalls
 		else
 		{
 		    print "Excluding call due to high depth: $_ AvgDepth: $avgDepth\n";
-		    print $rfh qq[$chr\t$start\t$end\t$label\_depth$avgDepth\t$score\n];
+		    print $rfh qq[$chr\t$start\t$end\t$label\_depth\t$avgDepth\t$score\n];
 		}
 	}
 	close( $cfh );
@@ -1078,6 +1132,19 @@ sub _getReferenceBase
     
     if( length( $base ) != 1 && $base !~ /acgtnACGTN/ ){die qq[Failed to get reference base at $chr:$pos-$pos: $base\n]}
     return $base;
+}
+
+sub _sequenceQualityOK
+{
+    my $seq = shift;
+    
+    #dont include the read if it is >80% N's
+    $seq = uc( $seq );
+    if( ($seq =~ tr/N//) < length( $seq ) * 0.8 )
+    {
+        return 1;
+    }
+    return 0;
 }
 
 sub _local_min_max
