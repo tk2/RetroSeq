@@ -31,7 +31,7 @@ use Vcf;
 
 my $VERSION = 0.1;
 
-my $DEFAULT_ID = 90;
+my $DEFAULT_ID = 80;
 my $DEFAULT_LENGTH = 36;
 my $DEFAULT_ANCHORQ = 30;
 my $DEFAULT_MAX_DEPTH = 200;
@@ -58,7 +58,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $input, $reads, $depth, $noclean, $chr, $tmpdir, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $chr, $input, $reads, $depth, $noclean, $tmpdir, $help);
 
 GetOptions
 (
@@ -82,6 +82,7 @@ GetOptions
     'noclean'       =>  \$noclean,
     'chr=s'         =>  \$chr,
     'tmp=s'         =>  \$tmpdir,
+    'chr=s'         =>  \$chr,
     'h|help'        =>  \$help,
 );
 
@@ -151,6 +152,7 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-c
     -input          Either a single output file from the dicover stage OR a file of file names (e.g. output from multiple lanes)
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
+    [-chr           call a particular chromosome only]
     [-depth         .....]
     [-reads         It is the minimum number of reads required to make a call. Default is 5. Parameter is optional.]
     [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
@@ -172,7 +174,7 @@ USAGE
     #test for samtools
     _checkBinary( q[samtools] );
     
-    _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $clean );
+    _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $chr, $clean );
 }
 elsif( $genotype )
 {
@@ -256,6 +258,7 @@ sub _findCandidates
                 {
                     print $ffh qq[>$name\n$seq\n];
                 }
+                delete( $candidates{ $name } );
             }
         }
         if( $currentChr ne $ref ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
@@ -294,8 +297,10 @@ sub _findCandidates
     close( $tfh );
     
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
+    system( q[exonerate --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" > $$.exonerate.out ] ) == 0 or die qq[Exonerate did not exit correctly];
     
-    open( my $efh, q[exonerate --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die "Failed to run exonerate alignments: $!";
+#    open( my $efh, q[exonerate --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die "Failed to run exonerate alignments: $!";
+    open( my $efh, qq[$$.exonerate.out] ) or die qq[Failed to read exonerate alignment files: $!\n];
     print qq[Parsing alignments....\n];
     my $lastLine;
     my %anchors;
@@ -378,6 +383,7 @@ sub _findInsertions
     my $minReads = shift;
     my $depth = shift;
     my $minQ = shift;
+    my $chr = shift;
     my $clean = shift;
     
     _checkBinary( 'sort' ); #sort cmd required
@@ -406,6 +412,12 @@ sub _findInsertions
             {
                 close( $tfh );
                 print qq[Calling TE type: $currentType\n];
+                
+                if( defined( $chr ) )
+                {
+                    #filter the BED file by the chromosome only
+                    _filterBED( $chr, $tempUnsorted );
+                }
                 
                 #call the insertions
                 my $tempSorted = qq[$$.raw_reads.0.$count.tab];
@@ -759,7 +771,7 @@ sub _getCandidateTEReadNames
         my $name = $sam[ 0 ];
         my $ref = $sam[ 2 ];
         my $mref = $sam[ 6 ];
-        my $rl = length( $sam[ 9 ] );
+        my $readLen = length( $sam[ 9 ] );
         
         if( $candidates{ $name } )
         {
@@ -771,12 +783,12 @@ sub _getCandidateTEReadNames
                 {
                     print $ffh qq[>$name\n$seq\n];
                 }
+                delete( $candidates{ $name } );
             }
-            delete( $candidates{ $name } );
         }
         
-        #            read is not a duplicate
-        if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $qual >= $minAnchor && $rl >= $length ) #ignore pcr dups
+        #            read is not a duplicate        map quality is >= minimum
+        if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $qual >= $minAnchor )
         {
             #           read is mapped                       mate is unmapped
             if( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ( $flag & $$BAMFLAGS{'mate_unmapped'} ) )
@@ -784,17 +796,15 @@ sub _getCandidateTEReadNames
                $candidates{ $name } = $flag & $$BAMFLAGS{'1st_in_pair'} ? 2 : 1; #mate is recorded
                
                my $pos = $sam[ 3 ];
-               my $rl = length( $sam[ 9 ] );
-               print $afh qq[$ref\t$pos\t].($pos+$rl).qq[\t$name\n];
+               print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\n];
             }
-            #            read is mapped                      mate is mapped                                  not paired correctly
-            elsif( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag && $$BAMFLAGS{'read_paired'} ) && $mref ne '=' )
+            #            read is mapped                         mate is mapped                                  not paired correctly
+            elsif( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag & $$BAMFLAGS{'read_paired'} ) && $mref ne '=' )
             {
                $candidates{ $name } = $flag & $$BAMFLAGS{'1st_in_pair'} ? 2 : 1; #mate is recorded
                
                my $pos = $sam[ 3 ];
-               my $rl = length( $sam[ 9 ] );
-               print $afh qq[$ref\t$pos\t].($pos+$rl).qq[\t$name\n];
+               print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\n];
             }
         }
         if( $currentChr ne $ref ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
@@ -1189,4 +1199,23 @@ sub _tab2Hash
     close( $tfh );
     
     return \%hash;
+}
+
+sub _filterBED
+{
+    my $chr = shift;
+    my $bed = shift;
+    
+    open( my $ofh, qq[>$$.filter.temp] ) or die $!;
+    open( my $ifh, $bed ) or die $!;
+    while( my $line = <$ifh> )
+    {
+        chomp( $line );
+        next unless $line =~ /^$chr\t/;
+        print $ofh qq[$line\n];
+    }
+    close( $ifh );close( $ofh );
+    
+    unlink( $bed ) or die qq[Failed to remove sorted BED: $!];
+    rename(qq[$$.filter.temp], $bed) or die qq[Failed to rename filtered BED: $!];
 }
