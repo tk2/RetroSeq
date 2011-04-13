@@ -31,11 +31,11 @@ use Vcf;
 
 my $VERSION = 0.1;
 
-my $DEFAULT_ID = 80;
+my $DEFAULT_ID = 90;
 my $DEFAULT_LENGTH = 36;
 my $DEFAULT_ANCHORQ = 30;
 my $DEFAULT_MAX_DEPTH = 200;
-my $DEFAULT_READS = 5;
+my $DEFAULT_READS = 10;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 2000;
 my $GENOTYPE_READS_WINDOW = 5000;
@@ -58,7 +58,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $chr, $input, $reads, $depth, $noclean, $tmpdir, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $chr, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $help);
 
 GetOptions
 (
@@ -83,6 +83,7 @@ GetOptions
     'chr=s'         =>  \$chr,
     'tmp=s'         =>  \$tmpdir,
     'chr=s'         =>  \$chr,
+    'rgs=s'         =>  \$readgroups,
     'h|help'        =>  \$help,
 );
 
@@ -119,6 +120,7 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-i
     [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
     [-id        Minmum percent ID for a match of a read to the transposon references. Default is 90.]
     [-len       Miniumum length of a hit to the transposon references. Default is 36bp.]
+    [-rgs       Comma separated list of readgroups to operate on. Default is all.]
     
 USAGE
     
@@ -136,24 +138,30 @@ USAGE
     $length = defined( $length ) && $length > 25 ? $length : $DEFAULT_LENGTH;
     my $clean = defined( $noclean ) ? 0 : 1;
     
+    if( $readgroups && length( $readgroups ) > 0 )
+    {
+        my @s = split( /,/, $readgroups );foreach my $rg ( @s ){if( $rg !~ /[A-Za-z0-9]|\.|-|_+/ ){croak qq[Invalid readgroup: $rg\n];}}
+        print qq[Restricting discovery phase to read groups: $readgroups\n];
+    }
+    
     print qq[\nMin anchor quality: $anchorQ\nMin percent identity: $id\nMin length for hit: $length\n\n];
     
     #test for samtools
     _checkBinary( q[samtools] );
     
-    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $clean );
+    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $clean );
 }
 elsif( $call )
 {
     ( $bam && $input && $ref && $output ) or die <<USAGE;
 Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-cleanup -reads <int> -depth <int>]
-
+    
     -bam            BAM file of paired reads mapped to reference genome
-    -input          Either a single output file from the dicover stage OR a file of file names (e.g. output from multiple lanes)
+    -input          Either a single output file from the discover stage OR a prefix of a set of files from discovery to be combined for calling
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
     [-chr           call a particular chromosome only]
-    [-depth         .....]
+    [-depth         Max average depth of a region to be considered for calling. Default is 200.]
     [-reads         It is the minimum number of reads required to make a call. Default is 5. Parameter is optional.]
     [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
     [-cleanup       Remove intermediate output files (yes/no). Default is yes.]
@@ -162,7 +170,14 @@ USAGE
     
     croak qq[Cant find BAM: $bam] unless -f $bam;
     croak qq[Cant find BAM index: $bam.bai] unless -f $bam.qq[.bai];
-    croak qq[Cant find input: $input] unless -f $input;
+    if( ! -f $input )
+    {
+        my @files = glob( qq[$input*] );
+        if( ! @files || @files == 0 )
+        {
+            croak qq[Cant find input or files with prefix: $input];
+        }
+    }
     croak qq[Cant find reference genome fasta: $ref] unless -f $ref;
     croak qq[Cant find reference genome index - please index your reference file with samtools faidx] unless -f qq[$ref.fai];
     
@@ -223,14 +238,23 @@ sub _findCandidates
     my $length = shift;
     my $minAnchor = shift;
     my $output = shift;
+    my $readgroups = shift;
     my $clean = shift;
     
     #test for ssaha2
     _checkBinary( q[exonerate] );
     
+    my $readgroupsFile = qq[$$.readgroups];
+    if( $readgroups )
+    {
+        open( my $tfh, qq[>$readgroupsFile] ) or die $!;
+        foreach my $rg (split(/,/, $readgroups )){print $tfh qq[$rg\n];}
+        close( $tfh );
+    }
+    
     my $candidatesFasta = qq[$$.candidates.fasta];
     my $candidatesBed = qq[$$.candidate_anchors.bed];
-    my %candidates = %{ _getCandidateTEReadNames($bam, undef, undef, undef, $minAnchor, $candidatesFasta, $candidatesBed ) };
+    my %candidates = %{ _getCandidateTEReadNames($bam, $readgroups, undef, undef, undef, $minAnchor, $candidatesFasta, $candidatesBed ) };
     
     print scalar( keys( %candidates ) ).qq[ candidate reads remain to be found after first pass....\n];
     
@@ -239,7 +263,7 @@ sub _findCandidates
     
     #now go and get the reads from the bam (annoying have to traverse through the bam a second time - but required for reads where the mate is aligned distantly)
     #also dump out their mates as will need these later as anchors
-    open( my $bfh, qq[samtools view $bam |] ) or die $!;
+    open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
     my $currentChr = '';
     while( my $sam = <$bfh> )
     {
@@ -297,7 +321,7 @@ sub _findCandidates
     close( $tfh );
     
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
-    system( q[exonerate --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" > $$.exonerate.out ] ) == 0 or die qq[Exonerate did not exit correctly];
+    system( qq[exonerate --bestn 5 --percent $id].q[ --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" > $$.exonerate.out ] ) == 0 or die qq[Exonerate exited incorrectly\n];
     
 #    open( my $efh, q[exonerate --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die "Failed to run exonerate alignments: $!";
     open( my $efh, qq[$$.exonerate.out] ) or die qq[Failed to read exonerate alignment files: $!\n];
@@ -388,13 +412,24 @@ sub _findInsertions
     
     _checkBinary( 'sort' ); #sort cmd required
     
-    #check the eof markers are there from the discovery stage
-    _checkDiscoveryOutput( $input );
+    my @files = glob( qq[$input*] );
+    my $input_;
+    if( @files && @files > 1 )
+    {
+        $input_ = qq[$$.merged.discovery];
+        _mergeDiscoveryOutputs( \@files, $input_ );
+    }
+    else
+    {
+        #check the eof markers are there from the discovery stage
+        _checkDiscoveryOutput( $input );
+        $input_ = $input;
+    }
     
     my $sampleName = _getBAMSampleName( $bam );
     
     #for each type in the file - call the insertions
-    open( my $ifh, $input ) or die $!;
+    open( my $ifh, $input_ ) or die $!;
     my $currentType = '';
     my $tempUnsorted = qq[$$.reads.0.tab]; #a temporary file to dump out the reads for this TE type
     my %typeBEDFiles;
@@ -747,6 +782,7 @@ sub _genotypeRegion
 sub _getCandidateTEReadNames
 {
     my $bam = shift;
+    my $readgroups = shift;
     my $chr = shift;
     my $start = shift;
     my $end = shift;
@@ -760,7 +796,7 @@ sub _getCandidateTEReadNames
     
     print qq[Opening BAM ($bam) and getting initial set of candidate mates....\n];
     
-    open( my $bfh, qq[samtools view $bam |] ) or die $!;
+    open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
     my $currentChr = '';
     while ( my $samLine = <$bfh> )
     {
@@ -905,9 +941,9 @@ sub _outputCalls
             {
                 $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
             }
-            $out{FORMAT} = ['GT'];
+            $out{FORMAT} = ['GT:GQ'];
             
-            $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>/<INS:ME>];
+            $out{gtypes}{$s[3]}{GT} = qq[1/1];
             $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
             
             $vcf_out->format_genotype_strings(\%out);
@@ -1218,4 +1254,67 @@ sub _filterBED
     
     unlink( $bed ) or die qq[Failed to remove sorted BED: $!];
     rename(qq[$$.filter.temp], $bed) or die qq[Failed to rename filtered BED: $!];
+}
+
+sub _mergeDiscoveryOutputs
+{
+    my $t = shift;
+    my @files = @{ $t };
+    my $output = shift;
+    
+    my %typeFile;
+    my $typeCount = 0;
+    my $currentFh;
+    my $header;
+    
+    #iterate through the files
+    foreach my $file ( @files )
+    {
+        #check its a valid discovery output file - not truncated etc.
+        _checkDiscoveryOutput( $file );
+
+        open( my $tfh, $file ) or die $!;
+        $header = <$tfh>; chomp( $header );
+        while( my $line = <$tfh> )
+        {
+            chomp( $line );
+            next if( $line =~ /^#/ );
+            if( $line =~ /^(TE_TYPE_START)(\s+)(.+)$/ )
+            {
+                my $currentType = $3;
+                                
+                if( ! $typeFile{ $currentType } )
+                {
+                    $typeFile{ $currentType } = qq[$$.merged.$typeCount];
+                    $typeCount ++;
+                }
+                
+                if( $currentFh ){close( $currentFh );}
+                open( my $currentFh, qq[>].$typeFile{ $currentType } ) or die $!;
+            }
+            else
+            {
+                print $currentFh qq[$line\n];
+            }
+        }
+        close( $tfh );
+    }
+    if( $currentFh ){close( $currentFh );}
+    
+    open( my $ofh, qq[>$output] ) or die $!;
+    #now merge into a single file
+    print $ofh qq[$header\n];
+    foreach my $type ( keys( %typeFile ) )
+    {
+        print $ofh qq[TE_TYPE_START $type\n];
+        open( my $ifh, $typeFile{ $type } ) or die $!;
+        while( <$ifh> )
+        {
+            chomp;
+            print $ofh qq[$_\n];
+        }
+        close( $ifh );
+        print $ofh qq[TE_TYPE_END\n];
+    }
+    close( $ofh );
 }
