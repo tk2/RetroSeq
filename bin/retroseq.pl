@@ -102,7 +102,7 @@ Usage: $0 -<command> options
             -call           Takes multiple output of discovery stage (can be multiple files of same sample e.g. multiple lanes) and a BAM and outputs a VCF of TE calls
             -genotype       Input is a VCF of TE calls and a set of sample BAMs, output is a new VCF with genotype calls for new samples
             
-NOTE: $0 requires samtools, ssaha2, unix sort to be in the default path
+NOTE: $0 requires samtools, exonerate, unix sort to be in the default path
 
 USAGE
 
@@ -319,7 +319,7 @@ sub _findCandidates
         $counter ++;
     }
     close( $tfh );
-    
+exit;    
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
     system( qq[exonerate --bestn 5 --percent $id].q[ --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" > $$.exonerate.out ] ) == 0 or die qq[Exonerate exited incorrectly\n];
     
@@ -483,6 +483,34 @@ sub _findInsertions
             print $tfh qq[$line\n];
         }
     }
+    
+    print qq[Calling TE type: $currentType\n];
+    
+    if( defined( $chr ) )
+    {
+        #filter the BED file by the chromosome only
+        _filterBED( $chr, $tempUnsorted );
+    }
+    
+    #call the insertions
+    my $tempSorted = qq[$$.raw_reads.0.$count.tab];
+    _sortBED( $tempUnsorted, $tempSorted );
+    
+    #convert to a region BED (removing any candidates with very low numbers of reads)
+    print qq[Calling initial rough boundaries of insertions....\n];
+    my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
+    _convertToRegionBED( $tempSorted, $minReads, $currentType.qq[_].$sampleName, $rawTECalls1 );
+                
+    #remove extreme depth calls
+    print qq[Removing calls with extremely high depth (>$depth)....\n];
+    my $rawTECalls2 = qq[$$.raw_calls.2.$count.tab];
+    _removeExtremeDepthCalls( $rawTECalls1, $bam, $depth, $rawTECalls2, $raw_candidates );
+    
+    #new calling filtering code
+    print qq[Filtering and refining candidate regions into calls....\n];
+    $typeBEDFiles{ $currentType } = qq[$$.raw_calls.3.$count.bed];
+    my $rawTECalls3 = qq[$$.raw_calls.3.$count.bed];
+    _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $rawTECalls3, $raw_candidates );
     
     #output calls in VCF format
     print qq[Creating VCF file of calls....\n];
@@ -913,13 +941,13 @@ sub _outputCalls
     foreach my $type ( keys( %typeBedFiles ) )
     {
         die qq[Cant find BED file for type: $type\n] if( ! -f $typeBedFiles{ $type } );
-
+my $f=$typeBedFiles{ $type };print qq[F: $f\n];        
         open( my $cfh, $typeBedFiles{ $type } ) or die qq[Failed to open TE calls file: ].$typeBedFiles{ $type }.qq[\n];
         while( <$cfh> )
         {
             chomp;
             my @s = split( /\t/, $_ );
-            
+print qq[C: $_\n];            
             my $pos = int( ( $s[ 1 ] + $s[ 2 ] ) / 2 );
             my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
             my $ci1 = $s[ 1 ] - $pos;
@@ -941,9 +969,9 @@ sub _outputCalls
             {
                 $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
             }
-            $out{FORMAT} = ['GT:GQ'];
+            $out{FORMAT} = ['GT'];
             
-            $out{gtypes}{$s[3]}{GT} = qq[1/1];
+            $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>/<INS:ME>];
             $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
             
             $vcf_out->format_genotype_strings(\%out);
@@ -1147,10 +1175,10 @@ sub _getVcfHeader
     $vcf_out->add_header_line({key=>'FORMAT',ID=>'GT',Number=>'1',Type=>'String',Description=>"Genotype"});
     
     ##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype quality">
-    $vcf_out->add_header_line( {key=>'FORMAT', ID=>'GQ', Number=>'1', Type=>'Float,Descriptions', Description=>'Genotype quality'} );
+    $vcf_out->add_header_line( {key=>'FORMAT', ID=>'GQ', Number=>'1', Type=>'Float,Description', Description=>'Genotype quality'} );
     
     $vcf_out->add_header_line( {key=>'INFO', ID=>'NOT_VALIDATED', Number=>'0', Type=>'Flag', Description=>'Not validated either computationally or experimentally'} );
-    $vcf_out->add_header_line( {key=>'INFO', ID=>'COMP_VALIDATED', Number=>'0', Type=>'Flag', Description=>'Computationally validated with local assembly'} );
+    #$vcf_out->add_header_line( {key=>'INFO', ID=>'COMP_VALIDATED', Number=>'0', Type=>'Flag', Description=>'Computationally validated with local assembly'} );
     
     return $vcf_out->format_header();
 }
@@ -1270,6 +1298,8 @@ sub _mergeDiscoveryOutputs
     #iterate through the files
     foreach my $file ( @files )
     {
+        die qq[Cant find candidates file: $file\n] unless -f $file;
+        
         #check its a valid discovery output file - not truncated etc.
         _checkDiscoveryOutput( $file );
 
@@ -1278,7 +1308,7 @@ sub _mergeDiscoveryOutputs
         while( my $line = <$tfh> )
         {
             chomp( $line );
-            next if( $line =~ /^#/ );
+            next if( $line =~ /^#/ || $line =~ /^TE_TYPE_END/ );
             if( $line =~ /^(TE_TYPE_START)(\s+)(.+)$/ )
             {
                 my $currentType = $3;
@@ -1290,7 +1320,7 @@ sub _mergeDiscoveryOutputs
                 }
                 
                 if( $currentFh ){close( $currentFh );}
-                open( my $currentFh, qq[>].$typeFile{ $currentType } ) or die $!;
+                open( $currentFh, qq[>>].$typeFile{ $currentType } ) or die $!;
             }
             else
             {
@@ -1303,7 +1333,7 @@ sub _mergeDiscoveryOutputs
     
     open( my $ofh, qq[>$output] ) or die $!;
     #now merge into a single file
-    print $ofh qq[$header\n];
+    print $ofh $HEADER.qq[\n];
     foreach my $type ( keys( %typeFile ) )
     {
         print $ofh qq[TE_TYPE_START $type\n];
@@ -1316,5 +1346,6 @@ sub _mergeDiscoveryOutputs
         close( $ifh );
         print $ofh qq[TE_TYPE_END\n];
     }
+    print $ofh $FOOTER.qq[\n];
     close( $ofh );
 }
