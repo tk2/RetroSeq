@@ -294,13 +294,13 @@ sub _findCandidates
     
     #create a single fasta file with all the TE ref seqs
     my %refLabels;
-    my $counter = 0;
+    my $counter = 1;
     my $refsFasta = qq[$$.allrefs.fasta];
     open( my $tfh, qq[>$refsFasta] ) or die $!;
     foreach my $type ( keys( %{ $erefs } ) )
     {
         open( my $sfh, $$erefs{ $type } ) or die $!;
-        my $seqCount = 0;
+        my $seqCount = 1;
         $refLabels{ $type } = $counter;
         while( my $line = <$sfh>)
         {
@@ -319,9 +319,9 @@ sub _findCandidates
         $counter ++;
     }
     close( $tfh );
-exit;    
+
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
-    system( qq[exonerate --bestn 5 --percent $id].q[ --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" > $$.exonerate.out ] ) == 0 or die qq[Exonerate exited incorrectly\n];
+    system( qq[exonerate --bestn 5 --percent ].($id-10).q[ --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" > $$.exonerate.out ] ) == 0 or die qq[Exonerate exited incorrectly\n];
     
 #    open( my $efh, q[exonerate --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die "Failed to run exonerate alignments: $!";
     open( my $efh, qq[$$.exonerate.out] ) or die qq[Failed to read exonerate alignment files: $!\n];
@@ -361,7 +361,7 @@ exit;
     {
         chomp( $anchor );
         my @s = split( /\t/, $anchor );
-        if( $anchors{ $s[ 3 ] } )
+        if( defined( $anchors{ $s[ 3 ] } ) )
         {
             my $fh = $TE_fh{ $anchors{ $s[ 3 ] } }; #get the ID of the type the read was aligned to
             print $fh qq[$anchor\n];
