@@ -26,7 +26,7 @@ use Cwd;
 use File::Basename;
 use File::Path qw(make_path);
 
-use lib dirname(__FILE__).'/../lib/all';
+use lib dirname(__FILE__).'/../lib/';
 use Vcf;
 
 my $VERSION = 0.1;
@@ -319,7 +319,7 @@ sub _findCandidates
         $counter ++;
     }
     close( $tfh );
-
+    
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
     system( qq[exonerate --bestn 5 --percent ].($id-10).q[ --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" > $$.exonerate.out ] ) == 0 or die qq[Exonerate exited incorrectly\n];
     
@@ -1214,7 +1214,7 @@ sub _sequenceQualityOK
     
     #dont include the read if it is >80% N's
     $seq = uc( $seq );
-    if( ($seq =~ tr/N//) < length( $seq ) * 0.8 )
+    if( ($seq =~ tr/N//) < length( $seq ) * 0.8 && $seq =~ /^[ACGTN]+$/ )
     {
         return 1;
     }
