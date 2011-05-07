@@ -241,7 +241,7 @@ sub _findCandidates
     my $readgroups = shift;
     my $clean = shift;
     
-    #test for ssaha2
+    #test for exonerate
     _checkBinary( q[exonerate] );
     
     my $readgroupsFile = qq[$$.readgroups];
