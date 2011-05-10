@@ -16,6 +16,9 @@ The BAM could be required to be sorted by readname before input
     - drawback is that for further stages you need the BAM sorted by coordinate
     - for big projects, it would be extra effort to pre-sort by name
 Calling of heterozygotes is not handled right now
+Genotyping
+    - test it
+    - should dump out genotype likelihoods also
 =cut
 
 use Carp;
@@ -512,7 +515,7 @@ sub _findInsertions
     my $rawTECalls3 = qq[$$.raw_calls.3.$count.bed];
     _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $rawTECalls3, $raw_candidates );
     
-    #output calls in VCF format
+    #output calls in VCF and BED format
     print qq[Creating VCF file of calls....\n];
     _outputCalls( \%typeBEDFiles, $sampleName, $ref, $output );
     
@@ -937,22 +940,23 @@ sub _outputCalls
     
     my $header = _getVcfHeader($vcf_out);
     print $vfh $header;
-    
+   
+    open( my $bfh, qq[>$output.bed] ) or die $!; 
     foreach my $type ( keys( %typeBedFiles ) )
     {
         die qq[Cant find BED file for type: $type\n] if( ! -f $typeBedFiles{ $type } );
-my $f=$typeBedFiles{ $type };print qq[F: $f\n];        
         open( my $cfh, $typeBedFiles{ $type } ) or die qq[Failed to open TE calls file: ].$typeBedFiles{ $type }.qq[\n];
         while( <$cfh> )
         {
             chomp;
             my @s = split( /\t/, $_ );
-print qq[C: $_\n];            
             my $pos = int( ( $s[ 1 ] + $s[ 2 ] ) / 2 );
             my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
             my $ci1 = $s[ 1 ] - $pos;
             my $ci2 = $s[ 2 ] - $pos;
             
+            print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\n];
+
             my %out;
             $out{CHROM}  = $s[ 0 ];
             $out{POS}    = $pos;
@@ -979,7 +983,7 @@ print qq[C: $_\n];
         }
         close( $cfh );
     }
-    close( $vfh );
+    close( $vfh );close( $bfh );
 }
 
 #remove calls where there is very high depth (measured from pileup) in the region
