@@ -42,6 +42,7 @@ my $DEFAULT_READS = 10;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 2000;
 my $GENOTYPE_READS_WINDOW = 5000;
+my $FILTER_WINDOW = 50;
 
 my $HEADER = qq[#retroseq v:$VERSION\n#START_CANDIDATES];
 my $FOOTER = qq[#END_CANDIDATES];
@@ -61,7 +62,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $chr, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $chr, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $help);
 
 GetOptions
 (
@@ -87,6 +88,7 @@ GetOptions
     'tmp=s'         =>  \$tmpdir,
     'chr=s'         =>  \$chr,
     'rgs=s'         =>  \$readgroups,
+    'filter=s'      =>  \$filterFile,
     'h|help'        =>  \$help,
 );
 
@@ -157,12 +159,13 @@ USAGE
 elsif( $call )
 {
     ( $bam && $input && $ref && $output ) or die <<USAGE;
-Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-cleanup -reads <int> -depth <int>]
+Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-filter <BED file> -cleanup -reads <int> -depth <int>]
     
     -bam            BAM file of paired reads mapped to reference genome
     -input          Either a single output file from the discover stage OR a prefix of a set of files from discovery to be combined for calling
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
+    [-filter        BED file of regions to exclude from final calls e.g. reference elements, low complexity etc.]
     [-chr           call a particular chromosome only]
     [-depth         Max average depth of a region to be considered for calling. Default is 200.]
     [-reads         It is the minimum number of reads required to make a call. Default is 5. Parameter is optional.]
@@ -188,11 +191,15 @@ USAGE
     $depth = defined( $depth ) && $depth =~ /^\d+$/ && $depth > -1 ? $depth : $DEFAULT_MAX_DEPTH;
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
     my $clean = defined( $noclean ) ? 0 : 1;
+    if( $filterFile )
+    {
+        croak qq[Cant find filter file: $filterFile] unless -f $filterFile;
+    }
     
     #test for samtools
     _checkBinary( q[samtools] );
     
-    _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $chr, $clean );
+    _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $chr, $clean, $filterFile );
 }
 elsif( $genotype )
 {
@@ -412,6 +419,7 @@ sub _findInsertions
     my $minQ = shift;
     my $chr = shift;
     my $clean = shift;
+    my $filterBED  = shift;
     
     _checkBinary( 'sort' ); #sort cmd required
     
@@ -456,7 +464,7 @@ sub _findInsertions
                     #filter the BED file by the chromosome only
                     _filterBED( $chr, $tempUnsorted );
                 }
-                
+
                 #call the insertions
                 my $tempSorted = qq[$$.raw_reads.0.$count.tab];
                 _sortBED( $tempUnsorted, $tempSorted );
@@ -465,7 +473,15 @@ sub _findInsertions
                 print qq[Calling initial rough boundaries of insertions....\n];
                 my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
                 _convertToRegionBED( $tempSorted, $minReads, $currentType.qq[_].$sampleName, $rawTECalls1 );
-                
+
+                if( defined( $filterBED ) )
+                {
+                    #remove the regions specified in the exclusion BED file
+                    my $filtered = qq[$$.raw_calls.1.filtered.$count.tab];
+                    _filterOutRegions( $rawTECalls1, $filterBED, $filtered );
+                    $rawTECalls1 = $filtered;
+                }
+exit;
                 #remove extreme depth calls
                 print qq[Removing calls with extremely high depth (>$depth)....\n];
                 my $rawTECalls2 = qq[$$.raw_calls.2.$count.tab];
@@ -1351,5 +1367,53 @@ sub _mergeDiscoveryOutputs
         print $ofh qq[TE_TYPE_END\n];
     }
     print $ofh $FOOTER.qq[\n];
+    close( $ofh );
+}
+
+sub _filterOutRegions
+{
+    my $inputBED = shift;
+    my $filterBED = shift;
+    my $outputBED = shift;
+
+    my @calls;
+    open( my $ifh, $inputBED ) or die $!;
+    while( my $line = <$ifh> ){chomp($line);push(@calls,$line);}
+    close( $ifh );    
+
+    open( my $ffh, $filterBED ) or die $!;
+    while( my $region = <$ffh> )
+    {
+        chomp( $region );
+        my @s = split( /\t/, $region );
+        my $i = 0;
+        foreach my $call (  @calls )
+        {
+            next unless $call;
+            my @s1 = split( /\t/, $call );
+            croak qq[Badly formatted call: $call] unless @s1==5;
+            if( $s[ 0 ] eq $s1[ 0 ] && ( 
+                ( $s1[ 1 ] > $s[ 1 ] && $s1[ 2 ] < $s[ 2 ] ) #totally enclosed in region
+                ||
+                ( abs( $s1[ 1 ] - $s[ 1 ] ) < $FILTER_WINDOW )
+                ||
+                ( abs( $s1[ 1 ] - $s[ 2 ] ) < $FILTER_WINDOW )
+                ||
+                ( abs( $s1[ 2 ] - $s[ 1 ] ) < $FILTER_WINDOW )
+                ||
+                ( abs( $s1[ 2 ] - $s[ 2 ] ) < $FILTER_WINDOW )
+                )
+              )
+            {
+                print qq[Excluding region: $calls[ $i ]\n];
+                undef( $calls[ $i ] );
+            }
+            $i ++;
+        }
+    }
+    close( $ffh );
+
+    open( my $ofh, qq[>$outputBED] ) or die $!;
+    foreach my $call ( @calls ){if(defined( $call ) ){ print qq[$call\n]; } }
     close( $ofh );
 }
