@@ -31,6 +31,7 @@ use File::Path qw(make_path);
 
 use lib dirname(__FILE__).'/../lib/';
 use Vcf;
+use Utilities;
 
 my $VERSION = 0.1;
 
@@ -42,7 +43,6 @@ my $DEFAULT_READS = 10;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 2000;
 my $GENOTYPE_READS_WINDOW = 5000;
-my $FILTER_WINDOW = 50;
 
 my $HEADER = qq[#retroseq v:$VERSION\n#START_CANDIDATES];
 my $FOOTER = qq[#END_CANDIDATES];
@@ -478,10 +478,10 @@ sub _findInsertions
                 {
                     #remove the regions specified in the exclusion BED file
                     my $filtered = qq[$$.raw_calls.1.filtered.$count.tab];
-                    _filterOutRegions( $rawTECalls1, $filterBED, $filtered );
+                    Utilities::filterOutRegions( $rawTECalls1, $filterBED, $filtered );
                     $rawTECalls1 = $filtered;
                 }
-exit;
+
                 #remove extreme depth calls
                 print qq[Removing calls with extremely high depth (>$depth)....\n];
                 my $rawTECalls2 = qq[$$.raw_calls.2.$count.tab];
@@ -1367,53 +1367,5 @@ sub _mergeDiscoveryOutputs
         print $ofh qq[TE_TYPE_END\n];
     }
     print $ofh $FOOTER.qq[\n];
-    close( $ofh );
-}
-
-sub _filterOutRegions
-{
-    my $inputBED = shift;
-    my $filterBED = shift;
-    my $outputBED = shift;
-
-    my @calls;
-    open( my $ifh, $inputBED ) or die $!;
-    while( my $line = <$ifh> ){chomp($line);push(@calls,$line);}
-    close( $ifh );    
-
-    open( my $ffh, $filterBED ) or die $!;
-    while( my $region = <$ffh> )
-    {
-        chomp( $region );
-        my @s = split( /\t/, $region );
-        my $i = 0;
-        foreach my $call (  @calls )
-        {
-            next unless $call;
-            my @s1 = split( /\t/, $call );
-            croak qq[Badly formatted call: $call] unless @s1==5;
-            if( $s[ 0 ] eq $s1[ 0 ] && ( 
-                ( $s1[ 1 ] > $s[ 1 ] && $s1[ 2 ] < $s[ 2 ] ) #totally enclosed in region
-                ||
-                ( abs( $s1[ 1 ] - $s[ 1 ] ) < $FILTER_WINDOW )
-                ||
-                ( abs( $s1[ 1 ] - $s[ 2 ] ) < $FILTER_WINDOW )
-                ||
-                ( abs( $s1[ 2 ] - $s[ 1 ] ) < $FILTER_WINDOW )
-                ||
-                ( abs( $s1[ 2 ] - $s[ 2 ] ) < $FILTER_WINDOW )
-                )
-              )
-            {
-                print qq[Excluding region: $calls[ $i ]\n];
-                undef( $calls[ $i ] );
-            }
-            $i ++;
-        }
-    }
-    close( $ffh );
-
-    open( my $ofh, qq[>$outputBED] ) or die $!;
-    foreach my $call ( @calls ){if(defined( $call ) ){ print qq[$call\n]; } }
     close( $ofh );
 }
