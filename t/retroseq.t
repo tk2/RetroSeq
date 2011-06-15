@@ -10,6 +10,6 @@ use Utilities;
 
 if( -f qq[data/filtered.bed]){unlink(qq[data/filtered.bed]);}
 
-is(Utilities::filterOutRegions(qq[data/input.bed], qq[data/reference_set.bed], qq[data/filtered.bed]), 3, "region filter checks");
+is(Utilities::filterOutRegions(qq[data/input.bed], qq[data/reference_set.bed], qq[data/filtered.bed]), 9, "region filter checks");
 
 

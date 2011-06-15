@@ -37,9 +37,9 @@ my $VERSION = 0.1;
 
 my $DEFAULT_ID = 90;
 my $DEFAULT_LENGTH = 36;
-my $DEFAULT_ANCHORQ = 30;
+my $DEFAULT_ANCHORQ = 20;
 my $DEFAULT_MAX_DEPTH = 200;
-my $DEFAULT_READS = 10;
+my $DEFAULT_READS = 5;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 2000;
 my $GENOTYPE_READS_WINDOW = 5000;
@@ -198,6 +198,7 @@ USAGE
     
     #test for samtools
     _checkBinary( q[samtools] );
+    _checkBinary( q[bcftools] );
     
     _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $chr, $clean, $filterFile );
 }
@@ -447,24 +448,31 @@ sub _findInsertions
     my $count = 0;
     my $tfh;
     my $raw_candidates = qq[$output.candidates];
-    while( my $line = <$ifh> )
+    open( my $dfh, qq[>$raw_candidates] ) or die $!;
+    print $dfh qq[FILTER: chr\tstart\tend\ttype\_sample\tDepth\tL_Fwd_both\tL_Rev_both\tL_Fwd_single\tL_Rev_single\tR_Fwd_both\tR_Rev_both\tR_Fwd_single\tR_Rev_single\tL_Last_both\tR_First_both\tDist\n];
+    close( $dfh );
+    while(1)
     {
+        my $line = <$ifh>;
+        last unless defined( $line );
         chomp( $line );
+        
         next if( $line =~ /^#/ );
         if( $line =~ /^(TE_TYPE_START)(\s+)(.+)$/ )
         {
-            my $nextType = $3;
-            if( $currentType ne '' )
-            {
-                close( $tfh );
+            $currentType = $3;
+            open( $tfh, qq[>$tempUnsorted] ) or die $!;
+        }
+        elsif( $line =~ /^TE_TYPE_END/ )
+        {
+            close( $tfh );
                 print qq[Calling TE type: $currentType\n];
-                
                 if( defined( $chr ) )
                 {
                     #filter the BED file by the chromosome only
                     _filterBED( $chr, $tempUnsorted );
                 }
-
+                
                 #call the insertions
                 my $tempSorted = qq[$$.raw_reads.0.$count.tab];
                 _sortBED( $tempUnsorted, $tempSorted );
@@ -473,7 +481,7 @@ sub _findInsertions
                 print qq[Calling initial rough boundaries of insertions....\n];
                 my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
                 _convertToRegionBED( $tempSorted, $minReads, $currentType.qq[_].$sampleName, $rawTECalls1 );
-
+                
                 if( defined( $filterBED ) )
                 {
                     #remove the regions specified in the exclusion BED file
@@ -493,43 +501,12 @@ sub _findInsertions
                 my $rawTECalls3 = qq[$$.raw_calls.3.$count.bed];
                 _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $rawTECalls3, $raw_candidates );
                 $count ++;
-            }
-            $currentType = $nextType;
-            open( $tfh, qq[>$tempUnsorted] ) or die $!;
         }
-        elsif( $line !~ /^(TE_TYPE_END)/ )
+        else
         {
             print $tfh qq[$line\n];
         }
     }
-    
-    print qq[Calling TE type: $currentType\n];
-    
-    if( defined( $chr ) )
-    {
-        #filter the BED file by the chromosome only
-        _filterBED( $chr, $tempUnsorted );
-    }
-    
-    #call the insertions
-    my $tempSorted = qq[$$.raw_reads.0.$count.tab];
-    _sortBED( $tempUnsorted, $tempSorted );
-    
-    #convert to a region BED (removing any candidates with very low numbers of reads)
-    print qq[Calling initial rough boundaries of insertions....\n];
-    my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
-    _convertToRegionBED( $tempSorted, $minReads, $currentType.qq[_].$sampleName, $rawTECalls1 );
-                
-    #remove extreme depth calls
-    print qq[Removing calls with extremely high depth (>$depth)....\n];
-    my $rawTECalls2 = qq[$$.raw_calls.2.$count.tab];
-    _removeExtremeDepthCalls( $rawTECalls1, $bam, $depth, $rawTECalls2, $raw_candidates );
-    
-    #new calling filtering code
-    print qq[Filtering and refining candidate regions into calls....\n];
-    $typeBEDFiles{ $currentType } = qq[$$.raw_calls.3.$count.bed];
-    my $rawTECalls3 = qq[$$.raw_calls.3.$count.bed];
-    _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $rawTECalls3, $raw_candidates );
     
     #output calls in VCF and BED format
     print qq[Creating VCF file of calls....\n];
@@ -563,29 +540,30 @@ sub _filterCallsBedMinima
 	while( my $originalCall = <$ifh> )
 	{
 	    chomp( $originalCall );
+	    print qq[Considering call $originalCall\n];
+	    
 	    my @originalCallA = split( /\t/, $originalCall );
 	    my $strain = (split( /\./, $originalCallA[3] ))[ 0 ];
 	    
 	    my $start = $originalCallA[ 1 ];my $end = $originalCallA[ 2 ];my $chr = $originalCallA[ 0 ];
 	    
-	    my $mid = int(($start + $end ) / 2);my $regStart = $mid - 600; $regStart = 1 if( $regStart < 1 );my $regEnd = $mid + 600;
-	    
-	    open( my $tfh, qq[samtools view -h -b $bam $chr:$regStart-$regEnd | samtools pileup -c -f $ref - | tail -1100 | head -1000 | ] ) or die $!;
+	    open( my $tfh, qq[samtools mpileup -r $chr:$start-$end -f $ref -u $bam | bcftools view - | ] ) or die $!;
 	    my %depths;
 	    while( <$tfh> )
 	    {
-	        chomp;my @s = split( /\t/, $_ );
-	        my $d = ($s[8]=~tr/,\./x/); #count the depth of the bases that match the reference (i.e. sometimes at the breakpoint there are snps causing false depth)
-	        if( $s[ 2 ] eq $s[ 3 ] )
+	        chomp;next if($_=~/^#/);my @s = split( /\t/, $_ );
+	        
+	        if( $s[ 4 ] =~ /^X$/ ) #not a snp call
 	        {
-	            $depths{ $s[ 1 ] } = $d; #if samtools thinks its not a real snp (i.e. dont want to consider depth at real snp positions
+	            #get the depth at the position
+	            my @tags = split( /;/, $s[ 7 ] );
+	            foreach( @tags ){if($_=~/^(DP=)(\d+)$/){$depths{ $s [ 1 ] } = $2;}}
 	        }
-	        else{$depths{ $s[ 1 ] } = $s[ 7 ];}
 	    }
 	    close( $tfh );
 	    
 	    my @res = _local_min_max( %depths );
-	    if( !@res || !$res[ 0 ] ){print qq[WARNING: no max/min returned for $originalCall\n];print $dfh qq[$originalCall\n];next;}
+	    if( !@res || !$res[ 0 ] ){print qq[WARNING: no max/min returned for $originalCall\n];print $dfh qq[$originalCallA[ 0 ]\t$originalCallA[ 1 ]\t$originalCallA[ 2 ]\t$originalCallA[3]_nodepth\t$originalCallA[ 4 ]\n\n];next;}
 	    my %min = %{$res[ 0 ]};
 	    my @positions = keys( %min );
 	    
@@ -602,13 +580,11 @@ sub _filterCallsBedMinima
 	        my $newIndex = $lastRefIndex + 1;
 	        while( $newIndex < @positions )
 	        {
-	            #print qq[n: $newIndex\n];
 	            my $closeby = 0;
 	            for( my $j = 0; $j < $newIndex; $j ++ )
-	            {#print qq[j: $j\n];
+	            {
 	                if( abs( $positions[$newIndex] - $positions[ $j ] ) < 50 ){$closeby = 1;last;}
 	            }
-	            #print qq[n1: $newIndex\n];
 	            last if( $closeby == 0 );
 	            $newIndex ++;
 	        }
@@ -617,7 +593,6 @@ sub _filterCallsBedMinima
 	        my $depth = $min{$positions[$newIndex]};
 	        my $refPos = $positions[ $newIndex ];
 	        
-	        print qq[$depth\t$refPos\n];
 	        last unless $depth < $minDepth;
 	        
 	        #test to see if lots of rp's either side
@@ -630,7 +605,6 @@ sub _filterCallsBedMinima
 	        #also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
 	        my $cmd = qq[samtools view $bam $chr:].($refPos-450).qq[-].($refPos+450).qq[ | ];
 	        open( $tfh, $cmd ) or die $!;
-	        print qq[$cmd\n];
 	        while( my $sam = <$tfh> )
 	        {
 	            chomp( $sam );
@@ -665,27 +639,21 @@ sub _filterCallsBedMinima
 	        #check there are supporting read pairs either side of the depth minima
 	        my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
 	        my $dist = $firstBluePos - $lastBluePos;
-	        print qq[$refPos\t$depth\t$lhsFwdBlue\t$lhsFwdGreen\t$lhsRevBlue\t$lhsRevGreen\t$rhsFwdBlue\t$rhsFwdGreen\t$rhsRevBlue\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
-	        if( $lhsFwdBlue >= 5 && $rhsRevBlue >= 5 && $lhsFwd > 10 && $rhsRev > 10 && ( $lhsRev == 0 || $lhsFwd / $lhsRev > 2 ) && ( $rhsFwd == 0 || $rhsRev / $rhsFwd > 2 ) && $dist < 120 )
+	        #print qq[$refPos\t$depth\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+	        if( $lhsFwdBlue >= 5 && $rhsRevBlue >= 5 && $lhsFwd > 10 && $rhsRev > 10 && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) && $dist < 120 )
 	        {
-	            #print $ofh qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\t$originalCallA[ 5 ]\n];
-	            
 	            my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
-	            if( $ratio < $minRatio ){$minRatioCall = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\t$originalCallA[ 5 ]\n];$minRatio = $ratio;}
+	            if( $ratio < $minRatio ){$minRatioCall = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];$minRatio = $ratio;}
 	            $found = 1;
-   	            print qq[found $refPos $firstBluePos $lastBluePos $dist $ratio\n];
+	            print $dfh qq[PASS: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$depth\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
 	        }
+	        else{print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$depth\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];}
 	        $tested ++;
 	    }
 	    
 	    if( $found == 1 )
 	    {
-	        print qq[called $minRatioCall];
 	        print $ofh $minRatioCall;
-	    }
-	    else
-	    {
-	        print $dfh qq[$originalCallA[ 0 ]\t$originalCallA[ 1 ]\t$originalCallA[ 2 ]\t$originalCallA[3]_filter\t$originalCallA[ 4 ]\n];
 	    }
 	}
 	close( $ifh );
@@ -777,7 +745,7 @@ sub _genotypeRegion
     
     #check the min depth in the region is < minDepth
     my $regStart = $start - 200; my $regEnd = $end + 200;
-    open( my $tfh, qq[samtools view -h -b $bam $chr:$regStart-$regEnd | samtools pileup -c -f $ref -N 1 - | tail -300 | head -200 | ] ) or die $!;
+    open( my $tfh, qq[samtools mpileup -f $ref -r $chr:$regStart-$regEnd $bam | tail -300 | head -200 | ] ) or die $!;
     my $minDepth_ = 100; my $minDepthPos = -1;
     while( <$tfh> )
     {
@@ -1028,7 +996,7 @@ sub _removeExtremeDepthCalls
 		my $score = $s[ 4 ];
 		
 		#get the avg depth over the region
-		my $totalDepth = `samtools view -h $bam $chr:$start-$end | samtools pileup -S - |  awk -F"\t" '{SUM += \$4} END {print SUM}'`;chomp( $totalDepth );
+		my $totalDepth = `samtools mpileup -r $chr:$start-$end $bam | awk -F"\t" '{SUM += \$4} END {print SUM}'`;chomp( $totalDepth );
 		my $avgDepth = $totalDepth / $size;
 		if( $avgDepth < $maxDepth )
 		{
