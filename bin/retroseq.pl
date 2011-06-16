@@ -62,7 +62,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $chr, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $chr, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $help);
 
 GetOptions
 (
@@ -88,6 +88,7 @@ GetOptions
     'tmp=s'         =>  \$tmpdir,
     'chr=s'         =>  \$chr,
     'rgs=s'         =>  \$readgroups,
+    'het'           =>  \$heterozygous,
     'filter=s'      =>  \$filterFile,
     'h|help'        =>  \$help,
 );
@@ -200,7 +201,7 @@ USAGE
     _checkBinary( q[samtools] );
     _checkBinary( q[bcftools] );
     
-    _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $chr, $clean, $filterFile );
+    _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $chr, $clean, $filterFile, $heterozygous );
 }
 elsif( $genotype )
 {
@@ -421,6 +422,7 @@ sub _findInsertions
     my $chr = shift;
     my $clean = shift;
     my $filterBED  = shift;
+    my $hets = shift;
     
     _checkBinary( 'sort' ); #sort cmd required
     
@@ -499,7 +501,7 @@ sub _findInsertions
                 print qq[Filtering and refining candidate regions into calls....\n];
                 $typeBEDFiles{ $currentType } = qq[$$.raw_calls.3.$count.bed];
                 my $rawTECalls3 = qq[$$.raw_calls.3.$count.bed];
-                _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $rawTECalls3, $raw_candidates );
+                _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $rawTECalls3, $raw_candidates, $hets );
                 $count ++;
         }
         else
@@ -533,6 +535,7 @@ sub _filterCallsBedMinima
 	my $ref = shift;
 	my $bedout = shift;
 	my $thrown_out_file = shift;
+	my $hets = shift;
 	
 	open( my $ifh, $bedin ) or die $!;
 	open( my $ofh, qq[>$bedout] ) or die $!;
@@ -547,33 +550,13 @@ sub _filterCallsBedMinima
 	    
 	    my $start = $originalCallA[ 1 ];my $end = $originalCallA[ 2 ];my $chr = $originalCallA[ 0 ];
 	    
-	    open( my $tfh, qq[samtools mpileup -r $chr:$start-$end -f $ref -u $bam | bcftools view - | ] ) or die $!;
-	    my %depths;
-	    while( <$tfh> )
-	    {
-	        chomp;next if($_=~/^#/);my @s = split( /\t/, $_ );
-	        
-	        if( $s[ 4 ] =~ /^X$/ ) #not a snp call
-	        {
-	            #get the depth at the position
-	            my @tags = split( /;/, $s[ 7 ] );
-	            foreach( @tags ){if($_=~/^(DP=)(\d+)$/){$depths{ $s [ 1 ] } = $2;}}
-	        }
-	    }
-	    close( $tfh );
-	    
-	    my @res = _local_min_max( %depths );
-	    if( !@res || !$res[ 0 ] ){print qq[WARNING: no max/min returned for $originalCall\n];print $dfh qq[$originalCallA[ 0 ]\t$originalCallA[ 1 ]\t$originalCallA[ 2 ]\t$originalCallA[3]_nodepth\t$originalCallA[ 4 ]\n\n];next;}
-	    my %min = %{$res[ 0 ]};
-	    my @positions = keys( %min );
-	    
-	    #sort by min depths
-	    @positions = sort {$min{$a}<=>$min{$b}} @positions;
+	    my @t = @{ Utilities::getCandidateBreakPointsDepth( $originalCallA[0], $originalCallA[1], $originalCallA[2], $bam, $ref, $dfh ) };
+	    my @positions = @{ $t[ 0 ] };my %min = %{ $t[ 1 ] };
 	    
 	    #test each point to see if has the desired signature of fwd / rev pointing reads
 	    my $found = 0;my $tested = 0;
 	    my $lastRefIndex = -1;
-	    my $minRatio = 100000;my $minRatioCall;
+	    my $minRatio = 100000;my $minRatioCall = undef;
 	    while( $tested < 5 )
 	    {
 	        #check the distance to the set tested so far (i.e. dont want to retest with a cluster of local minima)
@@ -595,65 +578,41 @@ sub _filterCallsBedMinima
 	        
 	        last unless $depth < $minDepth;
 	        
-	        #test to see if lots of rp's either side
-	        my $lhsFwdBlue = 0; my $lhsRevBlue = 0; my $rhsFwdBlue = 0; my $rhsRevBlue = 0;
-	        my $lhsFwdGreen = 0; my $lhsRevGreen = 0; my $rhsFwdGreen = 0; my $rhsRevGreen = 0;
+	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, $bam, $minMapQ, $originalCall, $dfh );
 	        
-	        #store the last blue read before the b/point, and first blue read after the b/point
-	        my $lastBluePos = 0;my $firstBluePos = 100000000000;
-	        
-	        #also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
-	        my $cmd = qq[samtools view $bam $chr:].($refPos-450).qq[-].($refPos+450).qq[ | ];
-	        open( $tfh, $cmd ) or die $!;
-	        while( my $sam = <$tfh> )
+	        if( $result && $result->[0] < $minRatio )
 	        {
-	            chomp( $sam );
-	            my @s = split( /\t/, $sam );
-	            next unless $s[ 4 ] > $minMapQ;
-	            #        the mate is mapped                        not paired correctly                        or mate ref name is different chr
-	            if( !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'}) && ( ( !( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) ) || ( $s[ 6 ] ne '=' ) ) )
-	            {
-	                if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
-	                {
-	                    if( $s[ 3 ] < $refPos ){$lhsRevBlue++;}else{$rhsRevBlue++;$firstBluePos = $s[ 3 ] if( $s[ 3 ] < $firstBluePos );}
-	                }
-	                else
-	                {
-	                    if( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastBluePos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastBluePos );}else{$rhsFwdBlue++;}
-	                }
-	            }
-	            #        the mate is unmapped
-	            elsif( $s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} )
-	            {
-	                if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
-	                {
-	                    if( $s[ 3 ] < $refPos ){$lhsRevGreen++;}else{$rhsRevGreen++;}
-	                }
-	                else
-	                {
-	                    if( $s[ 3 ] < $refPos ){$lhsFwdGreen++;}else{$rhsFwdGreen++;}
-	                }
-	            }
+	            $minRatio = $result->[0];
+	            $minRatioCall = $result->[1];
 	        }
 	        
-	        #check there are supporting read pairs either side of the depth minima
-	        my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
-	        my $dist = $firstBluePos - $lastBluePos;
-	        #print qq[$refPos\t$depth\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
-	        if( $lhsFwdBlue >= 5 && $rhsRevBlue >= 5 && $lhsFwd > 10 && $rhsRev > 10 && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) && $dist < 120 )
-	        {
-	            my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
-	            if( $ratio < $minRatio ){$minRatioCall = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];$minRatio = $ratio;}
-	            $found = 1;
-	            print $dfh qq[PASS: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$depth\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
-	        }
-	        else{print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$depth\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];}
 	        $tested ++;
 	    }
 	    
-	    if( $found == 1 )
+	    if( $minRatioCall )
 	    {
 	        print $ofh $minRatioCall;
+	    }
+	    elsif( $hets ) #if we are also testing for het calls - then try alternative method to call a het
+	    {
+	        my $candidateBreaks = Utilities::getCandidateBreakPointsDir();
+	        
+	        my $tested = 0;
+	        foreach my $candPos( @{$candidateBreaks} )
+	        {
+	            my $result = testBreakPoint( $originalCallA[ 0 ], $candPos, $bam, $minMapQ, $originalCall, $dfh );
+	            if( $result && $result->[0] < $minRatio )
+	            {
+	                $minRatio = $result->[0];
+	                $minRatioCall = $result->[1];
+	            }
+	            $tested ++;last if $tested > 5;
+	        }
+	        #########mark as het call??
+	        if( $minRatioCall )
+	        {
+	            print $ofh $minRatioCall;
+	        }
 	    }
 	}
 	close( $ifh );
@@ -1207,33 +1166,6 @@ sub _sequenceQualityOK
         return 1;
     }
     return 0;
-}
-
-sub _local_min_max
-{
-    my %depths = @_;
-    return undef unless keys( %depths ) > 1;
-    
-    my %minima = ();
-    my %maxima = ();
-    my $prev_cmp = 0;
-    
-    my @positions = keys( %depths );
-    for( my $i=0;$i<@positions-1;$i++)
-    {
-        my $cmp = $depths{$positions[$i]} <=> $depths{$positions[$i+1]};
-        if ($cmp && $cmp != $prev_cmp) 
-        {
-            $minima{ $positions[ $i ] } = $depths{ $positions[ $i ] };
-            $maxima{ $positions[ $i ] } = $depths{ $positions[ $i ] };
-            $prev_cmp = $cmp;
-        }
-    }
-    
-    $minima{ $positions[ -1 ] } = $depths{ $positions[ -1 ] } if $prev_cmp >= 0;
-    $maxima{ $positions[ -1 ] } = $depths{ $positions[ -1 ] } if $prev_cmp >= 0;
-    
-    return (\%minima, \%maxima);
 }
 
 sub _tab2Hash

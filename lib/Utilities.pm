@@ -5,6 +5,20 @@ use warnings;
 use Carp;
 
 my $FILTER_WINDOW = 50;
+my $BAMFLAGS = 
+{
+    'paired_tech'    => 0x0001,
+    'read_paired'    => 0x0002,
+    'unmapped'       => 0x0004,
+    'mate_unmapped'  => 0x0008,
+    'reverse_strand' => 0x0010,
+    'mate_reverse'   => 0x0020,
+    '1st_in_pair'    => 0x0040,
+    '2nd_in_pair'    => 0x0080,
+    'not_primary'    => 0x0100,
+    'failed_qc'      => 0x0200,
+    'duplicate'      => 0x0400,
+};
 
 sub filterOutRegions
 {
@@ -62,27 +76,77 @@ sub filterOutRegions
     return $filtered;
 }
 
-my $BAMFLAGS = 
+sub getCandidateBreakPointsDepth
 {
-    'paired_tech'    => 0x0001,
-    'read_paired'    => 0x0002,
-    'unmapped'       => 0x0004,
-    'mate_unmapped'  => 0x0008,
-    'reverse_strand' => 0x0010,
-    'mate_reverse'   => 0x0020,
-    '1st_in_pair'    => 0x0040,
-    '2nd_in_pair'    => 0x0080,
-    'not_primary'    => 0x0100,
-    'failed_qc'      => 0x0200,
-    'duplicate'      => 0x0400,
-};
-=pod
-sub testRegion
+    my $chr = shift;
+    my $start = shift;
+    my $end = shift;
+    my $bam = shift;
+    my $ref = shift;
+    my $dfh = shift; #handle to output stream for logging calls that fall out
+    
+    open( my $tfh, qq[samtools mpileup -r $chr:$start-$end -f $ref -u $bam | bcftools view - | ] ) or die $!;
+	my %depths;
+	while( <$tfh> )
+	{
+	    chomp;next if($_=~/^#/);my @s = split( /\t/, $_ );
+	        
+	    if( $s[ 4 ] =~ /^X$/ ) #not a snp call
+	    {
+	        #get the depth at the position
+	        my @tags = split( /;/, $s[ 7 ] );
+	        foreach( @tags ){if($_=~/^(DP=)(\d+)$/){$depths{ $s [ 1 ] } = $2;}}
+	    }
+	}
+	close( $tfh );
+	
+	my @res = _local_min_max( %depths );
+	if( !@res || !$res[ 0 ] ){print qq[WARNING: no max/min returned for $chr:$start-$end\n];print $dfh qq[$chr\t$start\t$end\tnodepth\n\n];next;}
+	my %min = %{$res[ 0 ]};
+	my @positions = keys( %min );
+	
+	#sort by min depths
+	@positions = sort {$min{$a}<=>$min{$b}} @positions;
+	
+	return [\@positions,\%min];
+}
+
+sub _local_min_max
+{
+    my %depths = @_;
+    return undef unless keys( %depths ) > 1;
+    
+    my %minima = ();
+    my %maxima = ();
+    my $prev_cmp = 0;
+    
+    my @positions = keys( %depths );
+    for( my $i=0;$i<@positions-1;$i++)
+    {
+        my $cmp = $depths{$positions[$i]} <=> $depths{$positions[$i+1]};
+        if ($cmp && $cmp != $prev_cmp) 
+        {
+            $minima{ $positions[ $i ] } = $depths{ $positions[ $i ] };
+            $maxima{ $positions[ $i ] } = $depths{ $positions[ $i ] };
+            $prev_cmp = $cmp;
+        }
+    }
+    
+    $minima{ $positions[ -1 ] } = $depths{ $positions[ -1 ] } if $prev_cmp >= 0;
+    $maxima{ $positions[ -1 ] } = $depths{ $positions[ -1 ] } if $prev_cmp >= 0;
+    
+    return (\%minima, \%maxima);
+}
+
+sub testBreakPoint
 {
     my $chr = shift;
     my $refPos = shift;
     my $bam = shift;
-    my $minMapQ
+    my $minMapQ = shift;
+    my $originalCall = shift;
+    my $dfh = shift; #file handle to print out info on failed calls
+    my @originalCallA = split( /\t/, $originalCall );
     
     #test to see if lots of rp's either side
     my $lhsFwdBlue = 0; my $lhsRevBlue = 0; my $rhsFwdBlue = 0; my $rhsRevBlue = 0;
@@ -128,22 +192,45 @@ sub testRegion
 	        #check there are supporting read pairs either side of the depth minima
 	        my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
 	        my $dist = $firstBluePos - $lastBluePos;
-	        #print qq[$refPos\t$depth\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+	        
 	        if( $lhsFwdBlue >= 5 && $rhsRevBlue >= 5 && $lhsFwd > 10 && $rhsRev > 10 && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) && $dist < 120 )
 	        {
 	            my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
-	            if( $ratio < $minRatio ){$minRatioCall = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];$minRatio = $ratio;}
-	            $found = 1;
-	            print $dfh qq[PASS: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$depth\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+	            my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];
+	            print $dfh qq[PASS: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+	            
+	            return [$ratio,$callString];
 	        }
-	        else{print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$depth\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];}	        
-	        
-	        if( $found )
+	        else
 	        {
-	            return $minRatioCall;
+	            print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+	            return undef;
 	        }
-	        else{return undef;}
 }
-=cut
+
+sub getCandidateBreakPointsDir
+{
+    my $chr = shift;
+    my $start = shift;
+    my $end = shift;
+    my $bam = shift;
+    my $minQ = shift;
+    my $minReads = shift;
+    
+    #get the coverage of the forward orientated reads
+    my $cmd = qq[samtools view -h $bam $chr:$start-$end | gawk -F"\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)==0' | samtools view -bS - > /tmp/$$.fwd.bam; samtools mpileup -A /tmp/$$.fwd.bam | sort -k4,4n | tail -1 | awk -F"\t" '{print $2}' | ];
+    open( my $tfh, $cmd ) or die $!;
+    my $fwdpos = <$tfh>;
+    chomp( $fwdpos );
+    
+    #get the coverage of the reverse orientated reads    
+    $cmd = qq[samtools view $bam -h $chr:$start-$end | gawk -F"\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)' | samtools view -bS - > /tmp/$$.fwd.bam; samtools mpileup -A /tmp/$$.fwd.bam | sort -k4,4n | tail -1 | awk -F"\t" '{print $2}' | ];
+    open( $tfh, $cmd ) or die $!;
+    my $revpos = <$tfh>;
+    chomp( $revpos );
+    
+    my $positions = [ ( $fwdpos + $revpos ) / 2 ];
+    return $positions;
+}
 
 1;
