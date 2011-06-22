@@ -88,7 +88,7 @@ GetOptions
     'tmp=s'         =>  \$tmpdir,
     'chr=s'         =>  \$chr,
     'rgs=s'         =>  \$readgroups,
-    'het'           =>  \$heterozygous,
+    'hets'           =>  \$heterozygous,
     'filter=s'      =>  \$filterFile,
     'h|help'        =>  \$help,
 );
@@ -166,12 +166,13 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-f
     -input          Either a single output file from the discover stage OR a prefix of a set of files from discovery to be combined for calling
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
+    [-hets          Call heterozygous insertions. Default is homozygous.]
     [-filter        BED file of regions to exclude from final calls e.g. reference elements, low complexity etc.]
     [-chr           call a particular chromosome only]
     [-depth         Max average depth of a region to be considered for calling. Default is 200.]
     [-reads         It is the minimum number of reads required to make a call. Default is 5. Parameter is optional.]
     [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
-    [-cleanup       Remove intermediate output files (yes/no). Default is yes.]
+    [-noclean       Do not remove intermediate output files. Default is to cleanup.]
     
 USAGE
     
@@ -491,7 +492,7 @@ sub _findInsertions
                     Utilities::filterOutRegions( $rawTECalls1, $filterBED, $filtered );
                     $rawTECalls1 = $filtered;
                 }
-
+                
                 #remove extreme depth calls
                 print qq[Removing calls with extremely high depth (>$depth)....\n];
                 my $rawTECalls2 = qq[$$.raw_calls.2.$count.tab];
@@ -499,9 +500,10 @@ sub _findInsertions
                 
                 #new calling filtering code
                 print qq[Filtering and refining candidate regions into calls....\n];
-                $typeBEDFiles{ $currentType } = qq[$$.raw_calls.3.$count.bed];
-                my $rawTECalls3 = qq[$$.raw_calls.3.$count.bed];
-                _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $rawTECalls3, $raw_candidates, $hets );
+                $typeBEDFiles{ $currentType }{hom} = qq[$$.raw_calls.3.$count.hom.bed]; #homozygous calls
+                $typeBEDFiles{ $currentType }{het} = undef; #het calls
+                if( $hets ){$typeBEDFiles{ $currentType }{het} = qq[$$.raw_calls.3.$count.het.bed];}
+                _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $raw_candidates, $hets, $typeBEDFiles{ $currentType }{hom}, $typeBEDFiles{ $currentType }{het} );
                 $count ++;
         }
         else
@@ -528,17 +530,25 @@ reads either side
 =cut
 sub _filterCallsBedMinima
 {
+    die qq[Incorrect number of paramters: ].scalar(@_) unless @_ == 9;
+    
     my $bedin = shift;
 	my $bam = shift;
 	my $minDepth = shift;
 	my $minMapQ = shift;
 	my $ref = shift;
-	my $bedout = shift;
 	my $thrown_out_file = shift;
 	my $hets = shift;
+	my $bedoutHoms = shift;
+	my $bedoutHets = shift;
 	
 	open( my $ifh, $bedin ) or die $!;
-	open( my $ofh, qq[>$bedout] ) or die $!;
+	open( my $homsfh, qq[>$bedoutHoms] ) or die $!;
+	my $hetsfh = undef;
+	if( $hets )
+	{
+	    open( $hetsfh, qq[>$bedoutHets] ) or die $!;
+	}
 	open( my $dfh, qq[>>$thrown_out_file] ) or die $!;
 	while( my $originalCall = <$ifh> )
 	{
@@ -572,6 +582,8 @@ sub _filterCallsBedMinima
 	            $newIndex ++;
 	        }
 	        last if $newIndex == @positions;
+	        
+	        print qq[Testing breakpoint $positions[ $newIndex ]\n];
 	        $lastRefIndex = $newIndex;
 	        my $depth = $min{$positions[$newIndex]};
 	        my $refPos = $positions[ $newIndex ];
@@ -591,16 +603,16 @@ sub _filterCallsBedMinima
 	    
 	    if( $minRatioCall )
 	    {
-	        print $ofh $minRatioCall;
+	        print $homsfh $minRatioCall;
 	    }
 	    elsif( $hets ) #if we are also testing for het calls - then try alternative method to call a het
 	    {
-	        my $candidateBreaks = Utilities::getCandidateBreakPointsDir();
+	        my $candidateBreaks = Utilities::getCandidateBreakPointsDir( $originalCallA[ 0 ], $originalCallA[ 1 ], $originalCallA[ 2 ], $bam, $minMapQ );
 	        
 	        my $tested = 0;
 	        foreach my $candPos( @{$candidateBreaks} )
 	        {
-	            my $result = testBreakPoint( $originalCallA[ 0 ], $candPos, $bam, $minMapQ, $originalCall, $dfh );
+	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, $bam, $minMapQ, $originalCall, $dfh );
 	            if( $result && $result->[0] < $minRatio )
 	            {
 	                $minRatio = $result->[0];
@@ -608,15 +620,16 @@ sub _filterCallsBedMinima
 	            }
 	            $tested ++;last if $tested > 5;
 	        }
-	        #########mark as het call??
+	        
 	        if( $minRatioCall )
 	        {
-	            print $ofh $minRatioCall;
+	            print $hetsfh $minRatioCall;
 	        }
 	    }
 	}
 	close( $ifh );
-	close( $ofh );
+	close( $homsfh );
+	close( $hetsfh ) if( $hets );
 	close( $dfh );
 }
 
@@ -887,44 +900,90 @@ sub _outputCalls
     open( my $bfh, qq[>$output.bed] ) or die $!; 
     foreach my $type ( keys( %typeBedFiles ) )
     {
-        die qq[Cant find BED file for type: $type\n] if( ! -f $typeBedFiles{ $type } );
-        open( my $cfh, $typeBedFiles{ $type } ) or die qq[Failed to open TE calls file: ].$typeBedFiles{ $type }.qq[\n];
-        while( <$cfh> )
+        #check for hom calls
+        if( $typeBedFiles{ $type }{hom} )
         {
-            chomp;
-            my @s = split( /\t/, $_ );
-            my $pos = int( ( $s[ 1 ] + $s[ 2 ] ) / 2 );
-            my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
-            my $ci1 = $s[ 1 ] - $pos;
-            my $ci2 = $s[ 2 ] - $pos;
-            
-            print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\n];
-
-            my %out;
-            $out{CHROM}  = $s[ 0 ];
-            $out{POS}    = $pos;
-            $out{ID}     = '.';
-            $out{ALT}    = [];
-            $out{REF}    = $refbase;
-            $out{QUAL}   = $s[ 4 ];
-            $out{FILTER} = ['NOT_VALIDATED'];
-            if( $ci1 < 0 || $ci2 > 1 )
+            die qq[Cant find BED file for type: $type\n] if( ! -f $typeBedFiles{ $type }{hom} );
+            open( my $cfh, $typeBedFiles{ $type }{hom} ) or die qq[Failed to open TE calls file: ].$typeBedFiles{ $type }.qq[\n];
+            while( <$cfh> )
             {
-                $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', CIPOS=>"$ci1,$ci2", NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                chomp;
+                my @s = split( /\t/, $_ );
+                my $pos = int( ( $s[ 1 ] + $s[ 2 ] ) / 2 );
+                my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
+                my $ci1 = $s[ 1 ] - $pos;
+                my $ci2 = $s[ 2 ] - $pos;
+                
+                print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\n];
+                
+                my %out;
+                $out{CHROM}  = $s[ 0 ];
+                $out{POS}    = $pos;
+                $out{ID}     = '.';
+                $out{ALT}    = ['<INS:ME>'];
+                $out{REF}    = $refbase;
+                $out{QUAL}   = $s[ 4 ];
+                $out{FILTER} = ['NOT_VALIDATED'];
+                if( $ci1 < 0 || $ci2 > 1 )
+                {
+                    $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', CIPOS=>"$ci1,$ci2", NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                }
+                else
+                {
+                    $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                }
+                $out{FORMAT} = ['GT'];
+                
+                $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>];
+                $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
+                
+                $vcf_out->format_genotype_strings(\%out);
+                print $vfh $vcf_out->format_line(\%out);
             }
-            else
-            {
-                $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
-            }
-            $out{FORMAT} = ['GT'];
-            
-            $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>/<INS:ME>];
-            $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
-            
-            $vcf_out->format_genotype_strings(\%out);
-            print $vfh $vcf_out->format_line(\%out);
+            close( $cfh );
         }
-        close( $cfh );
+        
+        if( $typeBedFiles{ $type }{het} )
+        {
+            die qq[Cant find BED file for type: $type\n] if( ! -f $typeBedFiles{ $type }{het} );
+            open( my $cfh, $typeBedFiles{ $type }{het} ) or die qq[Failed to open TE calls file: ].$typeBedFiles{ $type }{het}.qq[\n];
+            while( <$cfh> )
+            {
+                chomp;
+                my @s = split( /\t/, $_ );
+                my $pos = int( ( $s[ 1 ] + $s[ 2 ] ) / 2 );
+                my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
+                my $ci1 = $s[ 1 ] - $pos;
+                my $ci2 = $s[ 2 ] - $pos;
+                
+                print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\n];
+                
+                my %out;
+                $out{CHROM}  = $s[ 0 ];
+                $out{POS}    = $pos;
+                $out{ID}     = '.';
+                $out{ALT}    = [$refbase,'<INS:ME>'];
+                $out{REF}    = $refbase;
+                $out{QUAL}   = $s[ 4 ];
+                $out{FILTER} = ['NOT_VALIDATED'];
+                if( $ci1 < 0 || $ci2 > 1 )
+                {
+                    $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', CIPOS=>"$ci1,$ci2", NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                }
+                else
+                {
+                    $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                }
+                $out{FORMAT} = ['GT'];
+                
+                $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>];
+                $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
+                
+                $vcf_out->format_genotype_strings(\%out);
+                print $vfh $vcf_out->format_line(\%out);
+            }
+            close( $cfh );
+        }
     }
     close( $vfh );close( $bfh );
 }

@@ -140,6 +140,8 @@ sub _local_min_max
 
 sub testBreakPoint
 {
+    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 6;
+
     my $chr = shift;
     my $refPos = shift;
     my $bam = shift;
@@ -210,26 +212,55 @@ sub testBreakPoint
 
 sub getCandidateBreakPointsDir
 {
+    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 5;
+ 
     my $chr = shift;
     my $start = shift;
     my $end = shift;
     my $bam = shift;
     my $minQ = shift;
-    my $minReads = shift;
+    
+    if( $chr !~ /^\d+$/ || $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
+    if( ! -f $bam ){die qq[ERROR: Cant find bam file: $bam];}
     
     #get the coverage of the forward orientated reads
-    my $cmd = qq[samtools view -h $bam $chr:$start-$end | gawk -F"\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)==0' | samtools view -bS - > /tmp/$$.fwd.bam; samtools mpileup -A /tmp/$$.fwd.bam | sort -k4,4n | tail -1 | awk -F"\t" '{print $2}' | ];
-    open( my $tfh, $cmd ) or die $!;
-    my $fwdpos = <$tfh>;
-    chomp( $fwdpos );
+    #                   get sam                                 filter out low map Q reads                               mate is unmapped    mate not mapped in proper pair             mapped of fwd strand
+    my $cmd = qq[samtools view -h $bam $chr:$start-$end | gawk -F"\\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)==0' | samtools view -bS - > /tmp/].qq[$$.fwd.bam];
+    my $fwdpos = undef;
+    if( ! system( $cmd ) )
+    {
+        #call pileup to get the depth profile                                           get the max depth position
+        $cmd = qq[samtools mpileup -A /tmp/$$.fwd.bam | sort -k4,4n | tail -1 | ].q[awk -F"\t" '{print $2}' | ];
+        open( my $tfh, $cmd ) or warn $!;
+        $fwdpos = <$tfh>;
+        if( ! defined( $fwdpos ) ){warn qq[WARNING: Failed to get the fwdpos for het call: $chr:$start-$end];return undef;}
+        chomp( $fwdpos );
+    }
+    else{warn qq[Failed to run samtools over region to generate fwd reads bam: $cmd\n];return undef;}
     
-    #get the coverage of the reverse orientated reads    
-    $cmd = qq[samtools view $bam -h $chr:$start-$end | gawk -F"\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)' | samtools view -bS - > /tmp/$$.fwd.bam; samtools mpileup -A /tmp/$$.fwd.bam | sort -k4,4n | tail -1 | awk -F"\t" '{print $2}' | ];
-    open( $tfh, $cmd ) or die $!;
-    my $revpos = <$tfh>;
-    chomp( $revpos );
+    unlink( qq[/tmp/$$.fwd.bam] ) > 0 or print qq[WARNING: Failed to delete /tmp/$$.fwd.bam files];
     
-    my $positions = [ ( $fwdpos + $revpos ) / 2 ];
+    if( $fwdpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate fwd heterozygous breakpoints for $chr:$start-$end\n];return undef;}
+    
+    #get the coverage of the reverse orientated reads
+    #                   get sam                                 filter out low map Q reads                               mate is unmapped    mate not mapped in proper pair             mapped of rev strand
+    $cmd = qq[samtools view $bam -h $chr:$start-$end | gawk -F"\\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)' | samtools view -bS - > /tmp/].qq[$$.rev.bam];
+    my $revpos = undef;
+    if( ! system( $cmd ) )
+    {
+        $cmd = qq[samtools mpileup -A /tmp/$$.rev.bam | sort -k4,4n | tail -1 | ].q[awk -F"\t" '{print $2}' | ];
+        open( my $tfh, $cmd ) or warn $!;
+        $revpos = <$tfh>;
+        if( ! defined( $revpos ) ){warn qq[WARNING: Failed to get the revpos for het call: $chr:$start-$end];return undef;}
+        chomp( $revpos );
+    }
+    else{warn qq[Failed to run samtools over region to generate rev reads bam: $cmd\n];}
+    
+    unlink( qq[/tmp/$$.rev.bam] ) > 0 or print qq[WARNING: Failed to delete /tmp/$$.rev.bam files];
+    
+    if( $revpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate rev heterozygous breakpoints for $chr:$start-$end\n];return undef;}
+    
+    my $positions = [ int(( $fwdpos + $revpos ) / 2) ];
     return $positions;
 }
 
