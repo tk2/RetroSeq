@@ -160,7 +160,7 @@ USAGE
 elsif( $call )
 {
     ( $bam && $input && $ref && $output ) or die <<USAGE;
-Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-filter <BED file> -cleanup -reads <int> -depth <int>]
+Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-filter <BED file> -cleanup -reads <int> -depth <int> -hets]
     
     -bam            BAM file of paired reads mapped to reference genome
     -input          Either a single output file from the discover stage OR a prefix of a set of files from discovery to be combined for calling
@@ -483,7 +483,7 @@ sub _findInsertions
                 #convert to a region BED (removing any candidates with very low numbers of reads)
                 print qq[Calling initial rough boundaries of insertions....\n];
                 my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
-                _convertToRegionBED( $tempSorted, $minReads, $currentType.qq[_].$sampleName, $rawTECalls1 );
+                _convertToRegionBED( $tempSorted, $minReads, $sampleName, $rawTECalls1 );
                 
                 if( defined( $filterBED ) )
                 {
@@ -530,7 +530,7 @@ reads either side
 =cut
 sub _filterCallsBedMinima
 {
-    die qq[Incorrect number of paramters: ].scalar(@_) unless @_ == 9;
+    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 9;
     
     my $bedin = shift;
 	my $bam = shift;
@@ -924,17 +924,10 @@ sub _outputCalls
                 $out{REF}    = $refbase;
                 $out{QUAL}   = $s[ 4 ];
                 $out{FILTER} = ['NOT_VALIDATED'];
-                if( $ci1 < 0 || $ci2 > 1 )
-                {
-                    $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', CIPOS=>"$ci1,$ci2", NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
-                }
-                else
-                {
-                    $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
-                }
+                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
                 $out{FORMAT} = ['GT'];
                 
-                $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>];
+                $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>/<INS:ME>];
                 $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
                 
                 $vcf_out->format_genotype_strings(\%out);
@@ -966,17 +959,10 @@ sub _outputCalls
                 $out{REF}    = $refbase;
                 $out{QUAL}   = $s[ 4 ];
                 $out{FILTER} = ['NOT_VALIDATED'];
-                if( $ci1 < 0 || $ci2 > 1 )
-                {
-                    $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', CIPOS=>"$ci1,$ci2", NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
-                }
-                else
-                {
-                    $out{INFO} = { IMPRECISE=>undef, SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
-                }
-                $out{FORMAT} = ['GT'];
+                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                $out{FORMAT} = ['GT','GQ'];
                 
-                $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>];
+                $out{gtypes}{$s[3]}{GT} = qq[$refbase/<INS:ME>];
                 $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
                 
                 $vcf_out->format_genotype_strings(\%out);
@@ -1171,20 +1157,13 @@ sub _getVcfHeader
     ##ALT=<ID=INS:ME,Description="Insertion of a mobile element">
     $vcf_out->add_header_line( {key=>'ALT', ID=>'INS:ME', Type=>'String', Description=>"Insertion of a mobile element"} );
     
-    ##INFO=<ID=IMPRECISE,Number=0,Type=Flag,Description="Imprecise structural variation">
-    $vcf_out->add_header_line( {key=>'INFO', ID=>'IMPRECISE', Number=>'0', Type=>'Flag', Description=>'Imprecise structural variation'} );
-    
-    ##INFO=<ID=CIPOS,Number=2,Type=Integer,Description="Confidence interval around POS for imprecise variants">
-    $vcf_out->add_header_line( {key=>'INFO', ID=>'CIPOS', Number=>'2', Type=>'Integer,Description', Description=>'Confidence interval around POS for imprecise variants' } );
-    
     ##FORMAT=<ID=GT,Number=1,Type=Integer,Description="Genotype">
     $vcf_out->add_header_line({key=>'FORMAT',ID=>'GT',Number=>'1',Type=>'String',Description=>"Genotype"});
     
     ##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype quality">
     $vcf_out->add_header_line( {key=>'FORMAT', ID=>'GQ', Number=>'1', Type=>'Float,Description', Description=>'Genotype quality'} );
     
-    $vcf_out->add_header_line( {key=>'INFO', ID=>'NOT_VALIDATED', Number=>'0', Type=>'Flag', Description=>'Not validated either computationally or experimentally'} );
-    #$vcf_out->add_header_line( {key=>'INFO', ID=>'COMP_VALIDATED', Number=>'0', Type=>'Flag', Description=>'Computationally validated with local assembly'} );
+    $vcf_out->add_header_line( {key=>'INFO', ID=>'NOT_VALIDATED', Number=>'0', Type=>'Flag', Description=>'Not validated experimentally'} );
     
     return $vcf_out->format_header();
 }
