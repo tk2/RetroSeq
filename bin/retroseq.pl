@@ -41,8 +41,7 @@ my $DEFAULT_ANCHORQ = 20;
 my $DEFAULT_MAX_DEPTH = 200;
 my $DEFAULT_READS = 5;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
-my $MAX_READ_GAP_IN_REGION = 2000;
-my $GENOTYPE_READS_WINDOW = 5000;
+my $MAX_READ_GAP_IN_REGION = 300;
 
 my $HEADER = qq[#retroseq v:$VERSION\n#START_CANDIDATES];
 my $FOOTER = qq[#END_CANDIDATES];
@@ -235,7 +234,7 @@ USAGE
     $length = defined( $length ) && $length > 25 ? $length : $DEFAULT_LENGTH;
     $tmpdir = defined( $tmpdir ) && -d $tmpdir ? $tmpdir : getcwd();
     
-#    _genotype( $bams, $input, $eRef, $reads, $chr, $anchorQ, $id, $length, $tmpdir, $output, $clean );
+    _genotype( $bams, $input, $eRefFofn, $reads, $chr, $anchorQ, $id, $length, $tmpdir, $output, $clean );
 }
 else
 {
@@ -271,38 +270,40 @@ sub _findCandidates
     
     print scalar( keys( %candidates ) ).qq[ candidate reads remain to be found after first pass....\n];
     
-    open( my $ffh, qq[>>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
-    open( my $afh, qq[>>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
-    
-    #now go and get the reads from the bam (annoying have to traverse through the bam a second time - but required for reads where the mate is aligned distantly)
-    #also dump out their mates as will need these later as anchors
-    open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
-    my $currentChr = '';
-    while( my $sam = <$bfh> )
+    if( keys( %candidates ) > 0 )
     {
-        chomp( $sam );
-        my @s = split( /\t/, $sam );
-        my $name = $s[ 0 ];
-        my $flag = $s[ 1 ];
-        my $ref = $s[ 2 ];
-        if( $candidates{ $name } )
+        open( my $ffh, qq[>>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
+        open( my $afh, qq[>>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
+        
+        #now go and get the reads from the bam (annoying have to traverse through the bam a second time - but required for reads where the mate is aligned distantly)
+        #also dump out their mates as will need these later as anchors
+        open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
+        my $currentChr = '';
+        while( my $sam = <$bfh> )
         {
-            #       read is 1st in pair                looking for 1st in pair      read in 2nd in pair                     looking for second
-            if( ($flag & $$BAMFLAGS{'1st_in_pair'}) && $candidates{ $name } == 1 || ($flag & $$BAMFLAGS{'2nd_in_pair'}) && $candidates{ $name } == 2 )
+            chomp( $sam );
+            my @s = split( /\t/, $sam );
+            my $name = $s[ 0 ];
+            my $flag = $s[ 1 ];
+            my $ref = $s[ 2 ];
+            if( $candidates{ $name } )
             {
-                my $seq = $s[ 9 ];
-                if( _sequenceQualityOK( $seq ) )
+                #       read is 1st in pair                looking for 1st in pair      read in 2nd in pair                     looking for second
+                if( ($flag & $$BAMFLAGS{'1st_in_pair'}) && $candidates{ $name } == 1 || ($flag & $$BAMFLAGS{'2nd_in_pair'}) && $candidates{ $name } == 2 )
                 {
-                    print $ffh qq[>$name\n$seq\n];
+                    my $seq = $s[ 9 ];
+                    if( _sequenceQualityOK( $seq ) )
+                    {
+                        print $ffh qq[>$name\n$seq\n];
+                    }
+                    delete( $candidates{ $name } );
                 }
-                delete( $candidates{ $name } );
             }
+            if( $currentChr ne $ref ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
         }
-        if( $currentChr ne $ref ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
+        close( $ffh );
+        close( $afh );
     }
-    close( $ffh );
-    close( $afh );
-    
     undef %candidates; #finished with this hash
     
     #create a single fasta file with all the TE ref seqs
@@ -333,10 +334,20 @@ sub _findCandidates
     }
     close( $tfh );
     
+    #if there arent any candidates, then we are done
+    if( -s qq[$$.candidates.fasta] > 0 )
+    {
+        if( $clean )
+        {
+            #delete the intermediate files
+            unlink( glob( qq[$$.*] ) ) or die qq[Failed to remove intermediate files: $!];
+        }
+        exit;
+    }
+    
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
     system( qq[exonerate --bestn 5 --percent ].($id-10).q[ --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" > $$.exonerate.out ] ) == 0 or die qq[Exonerate exited incorrectly\n];
     
-#    open( my $efh, q[exonerate --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die "Failed to run exonerate alignments: $!";
     open( my $efh, qq[$$.exonerate.out] ) or die qq[Failed to read exonerate alignment files: $!\n];
     print qq[Parsing alignments....\n];
     my $lastLine;
@@ -388,7 +399,7 @@ sub _findCandidates
     }
     
     #now put all the anchors together into a single file per type
-    open( $afh, qq[>$output] ) or die $!;
+    open( my $afh, qq[>$output] ) or die $!;
 	print $afh qq[$HEADER\n];
     foreach my $type ( keys( %{ $erefs } ) )
     {
@@ -483,7 +494,7 @@ sub _findInsertions
                 #convert to a region BED (removing any candidates with very low numbers of reads)
                 print qq[Calling initial rough boundaries of insertions....\n];
                 my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
-                _convertToRegionBED( $tempSorted, $minReads, $sampleName, $rawTECalls1 );
+                Utilities::convertToRegionBED( $tempSorted, $minReads, $sampleName, $MAX_READ_GAP_IN_REGION, $rawTECalls1 );
                 
                 if( defined( $filterBED ) )
                 {
@@ -682,13 +693,17 @@ sub _genotypeCallsMinimaTable
         my $start = ($$entry{POS} + $ci[ 0 ]) > 1 ? $$entry{POS} + $ci[ 0 ] : 1;
         my $end = $$entry{POS} + $ci[ 1 ];
         
+        #get the existing GT call
+        my @samples = keys( %{$$entry{gtypes}});
+        my $gt = $$entry{gtypes}{$samples[ 0 ]}{GT};
+        
         foreach my $sample ( sort( keys( %sampleBAM ) ) )
         {
-            my $call = _genotypeRegion($chr, $start, $end, $sampleBAM{ $sample }, $minDepth, $minMapQ, $ref );
+            my $quality = Utilities::genotypeRegion($chr, $start, $end, $sampleBAM{ $sample }, $minDepth, $minMapQ, $ref );
             if( $call )
 	        {
-	            $$entry{gtypes}{$sample}{GT} = qq[<INS:ME>/<INS:ME>];
-                $$entry{gtypes}{$sample}{GQ} = $call;
+	            $$entry{gtypes}{$sample}{GT} = $gt;
+                $$entry{gtypes}{$sample}{GQ} = $quality;
 	        }
 	        else
 	        {
@@ -701,67 +716,6 @@ sub _genotypeCallsMinimaTable
     }
     $vcf->close();
 	close( $out );
-}
-
-sub _genotypeRegion
-{
-    my $chr = shift;
-    my $start = shift;
-    my $end = shift;
-    my $bam = shift;
-    my $minDepth = shift;
-    my $minMapQ = shift;
-    my $ref = shift;
-    
-    die qq[cant find bam: $bam\n] unless -f $bam;
-    
-    #check the min depth in the region is < minDepth
-    my $regStart = $start - 200; my $regEnd = $end + 200;
-    open( my $tfh, qq[samtools mpileup -f $ref -r $chr:$regStart-$regEnd $bam | tail -300 | head -200 | ] ) or die $!;
-    my $minDepth_ = 100; my $minDepthPos = -1;
-    while( <$tfh> )
-    {
-        chomp;my @s = split( /\t/, $_ );
-	    my $d = ($s[8]=~tr/,\./x/); #count the depth of the bases that match the reference (i.e. sometimes at the breakpoint there are snps causing false depth)
-	    if( $s[ 2 ] eq $s[ 3 ] && $d < $minDepth_ )
-	    {
-	        $minDepth_ = $d;$minDepthPos = $s[ 1 ];
-	    }
-	    elsif($s[ 7 ] < $minDepth_ ){$minDepth_ = $s[ 7 ];$minDepthPos = $s[ 1 ];}
-    }
-    close( $tfh );
-    
-    if( $minDepth_ > $minDepth ){return undef;} #no call - depth to high
-    
-    #also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
-    my $cmd = qq[samtools view $bam $chr:].($minDepthPos-300).qq[-].($minDepthPos+300).qq[ | ];
-	open( $tfh, $cmd ) or die $!;
-	my $lhsRev = 0; my $rhsRev = 0; my $lhsFwd = 0; my $rhsFwd = 0;
-	while( <$tfh> )
-	{
-	    chomp;
-	    my @s = split( /\t/, $_ );
-	    next unless $s[ 4 ] > $minMapQ;
-	    if( !( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && ( $s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} || $s[ 2 ] ne $s[ 6 ] ) )
-	    {
-	        #print qq[candidate: $s[1]\n];
-	        if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
-	        {
-	            if( $s[ 3 ] < $minDepthPos ){$lhsRev++;}else{$rhsRev++;}
-	        }
-	        else
-	        {
-	            if( $s[ 3 ] < $minDepthPos ){$lhsFwd++;}else{$rhsFwd++;}
-	        }
-	    }
-	 }
-	 
-	 #N.B. Key difference is that only 1 side is required to have the correct ratio of fw:rev reads
-	 if( $lhsFwd > 5 && $rhsRev > 5 && ( ( $lhsRev == 0 || $lhsFwd / $lhsRev > 2 ) || ( $rhsFwd == 0 || $rhsRev / $rhsFwd > 2 ) ) )
-	 {
-	     return ($lhsFwd+$rhsRev);
-	 }
-	 return undef;
 }
 
 #***************************INTERNAL HELPER FUNCTIONS********************
@@ -925,7 +879,7 @@ sub _outputCalls
                 $out{QUAL}   = $s[ 4 ];
                 $out{FILTER} = ['NOT_VALIDATED'];
                 $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
-                $out{FORMAT} = ['GT'];
+                $out{FORMAT} = ['GT', 'GQ'];
                 
                 $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>/<INS:ME>];
                 $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
@@ -1015,86 +969,6 @@ sub _removeExtremeDepthCalls
 	close( $cfh );
 	close( $ofh );
 	close( $rfh );
-	
-	return 1;
-}
-
-#convert the individual read calls to calls for putative TE insertion calls
-#output is a BED file and a VCF file of the calls
-sub _convertToRegionBED
-{
-	my $calls = shift;
-	my $minReads = shift;
-	my $id = shift;
-	my $outputbed = shift;
-	
-	open( my $ofh, qq[>$outputbed] ) or die $!;
-	open( my $cfh, $calls ) or die $!;
-	my $lastEntry = undef;
-	my $regionStart = 0;
-	my $regionEnd = 0;
-	my $regionChr = 0;
-	my $reads_in_region = 0;
-	my %startPos; #all of the reads must start from a different position (i.e. strict dup removal)
-	while( <$cfh> )
-	{
-		chomp;
-		my @s = split( /\t/, $_ );
-		if( ! defined $lastEntry )
-		{
-			$regionStart = $s[ 1 ];
-			$regionEnd = $s[ 1 ];
-			$regionChr = $s[ 0 ];
-			$reads_in_region = 1;
-			$startPos{ $s[ 1 ] } = 1;
-		}
-		elsif( $s[ 0 ] ne $regionChr )
-		{
-			#done - call the region
-			my @s1 = split( /\t/, $lastEntry );
-			$regionEnd = $s1[ 1 ];
-			my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
-			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
-			
-			$reads_in_region = 1;
-			$regionStart = $s[ 1 ];
-			$regionEnd = $s[ 1 ];
-			$regionChr = $s[ 0 ];
-			%startPos = ();
-			$startPos{ $s[ 1 ] } = 1;
-		}
-		elsif( $s[ 1 ] - $regionEnd > $MAX_READ_GAP_IN_REGION )
-		{
-			#call the region
-			my @s1 = split( /\t/, $lastEntry );
-			$regionEnd = $s1[ 1 ];
-			my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
-			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
-			
-			$reads_in_region = 1;
-			$regionStart = $s[ 1 ];
-			$regionChr = $s[ 0 ];
-			
-			%startPos = ();
-			$startPos{ $s[ 1 ] } = 1;
-		}
-		else
-		{
-			#read is within the region - increment
-			if( ! defined( $startPos{ $s[ 1 ] } ) )
-			{
-				$reads_in_region ++;
-				$regionEnd = $s[ 1 ];
-				$startPos{ $s[ 1 ] } = 1;
-			}
-		}
-		$lastEntry = $_;
-	}
-	my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
-	
-	print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
-	close( $cfh );
-	close( $ofh );
 	
 	return 1;
 }

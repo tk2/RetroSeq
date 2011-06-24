@@ -210,6 +210,69 @@ sub testBreakPoint
 	        }
 }
 
+sub genotypeRegion
+{
+    croak qq[Incorrect number of arguments: ].scalar(@_) unless @_ == 7;
+    
+    my $chr = shift;
+    my $start = shift;
+    my $end = shift;
+    my $bam = shift;
+    my $minDepth = shift;
+    my $minMapQ = shift;
+    my $ref = shift;
+    
+    die qq[cant find bam: $bam\n] unless -f $bam;
+    
+    #check the min depth in the region is < minDepth
+    my $regStart = $start - 200; my $regEnd = $end + 200;
+    open( my $tfh, qq[samtools mpileup -f $ref -r $chr:$regStart-$regEnd $bam | tail -300 | head -200 | ] ) or die $!;
+    my $minDepth_ = 100; my $minDepthPos = -1;
+    while( <$tfh> )
+    {
+        chomp;my @s = split( /\t/, $_ );
+	    my $d = ($s[8]=~tr/,\./x/); #count the depth of the bases that match the reference (i.e. sometimes at the breakpoint there are snps causing false depth)
+	    if( $s[ 2 ] eq $s[ 3 ] && $d < $minDepth_ )
+	    {
+	        $minDepth_ = $d;$minDepthPos = $s[ 1 ];
+	    }
+	    elsif($s[ 7 ] < $minDepth_ ){$minDepth_ = $s[ 7 ];$minDepthPos = $s[ 1 ];}
+    }
+    close( $tfh );
+    
+    if( $minDepth_ > $minDepth ){return undef;} #no call - depth to high
+    
+    #also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
+    my $cmd = qq[samtools view $bam $chr:].($minDepthPos-300).qq[-].($minDepthPos+300).qq[ | ];
+	open( $tfh, $cmd ) or die $!;
+	my $lhsRev = 0; my $rhsRev = 0; my $lhsFwd = 0; my $rhsFwd = 0;
+	while( <$tfh> )
+	{
+	    chomp;
+	    my @s = split( /\t/, $_ );
+	    next unless $s[ 4 ] > $minMapQ;
+	    if( !( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && ( $s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} || $s[ 2 ] ne $s[ 6 ] ) )
+	    {
+	        #print qq[candidate: $s[1]\n];
+	        if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
+	        {
+	            if( $s[ 3 ] < $minDepthPos ){$lhsRev++;}else{$rhsRev++;}
+	        }
+	        else
+	        {
+	            if( $s[ 3 ] < $minDepthPos ){$lhsFwd++;}else{$rhsFwd++;}
+	        }
+	    }
+	 }
+	 
+	 #N.B. Key difference is that only 1 side is required to have the correct ratio of fw:rev reads
+	 if( $lhsFwd > 5 && $rhsRev > 5 && ( ( $lhsRev == 0 || $lhsFwd / $lhsRev > 2 ) || ( $rhsFwd == 0 || $rhsRev / $rhsFwd > 2 ) ) )
+	 {
+	     return ($lhsFwd+$rhsRev);
+	 }
+	 return undef;
+}
+
 sub getCandidateBreakPointsDir
 {
     die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 5;
@@ -262,6 +325,87 @@ sub getCandidateBreakPointsDir
     
     my $positions = [ int(( $fwdpos + $revpos ) / 2) ];
     return $positions;
+}
+
+#convert the individual read calls to calls for putative TE insertion calls
+#output is a BED file and a VCF file of the calls
+sub convertToRegionBED
+{
+	my $calls = shift;
+	my $minReads = shift;
+	my $id = shift;
+	my $max_gap = shift;
+	my $outputbed = shift;
+	
+	open( my $ofh, qq[>$outputbed] ) or die $!;
+	open( my $cfh, $calls ) or die $!;
+	my $lastEntry = undef;
+	my $regionStart = 0;
+	my $regionEnd = 0;
+	my $regionChr = 0;
+	my $reads_in_region = 0;
+	my %startPos; #all of the reads must start from a different position (i.e. strict dup removal)
+	while( <$cfh> )
+	{
+		chomp;
+		my @s = split( /\t/, $_ );
+		if( ! defined $lastEntry )
+		{
+			$regionStart = $s[ 1 ];
+			$regionEnd = $s[ 1 ];
+			$regionChr = $s[ 0 ];
+			$reads_in_region = 1;
+			$startPos{ $s[ 1 ] } = 1;
+		}
+		elsif( $s[ 0 ] ne $regionChr )
+		{
+			#done - call the region
+			my @s1 = split( /\t/, $lastEntry );
+			$regionEnd = $s1[ 1 ];
+			my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
+			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
+			
+			$reads_in_region = 1;
+			$regionStart = $s[ 1 ];
+			$regionEnd = $s[ 1 ];
+			$regionChr = $s[ 0 ];
+			%startPos = ();
+			$startPos{ $s[ 1 ] } = 1;
+		}
+		elsif( $s[ 1 ] - $regionEnd > $max_gap )
+		{
+			#call the region
+			my @s1 = split( /\t/, $lastEntry );
+			$regionEnd = $s1[ 1 ];
+			my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
+			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
+			
+			$reads_in_region = 1;
+			$regionStart = $s[ 1 ];
+			$regionChr = $s[ 0 ];
+			
+			%startPos = ();
+			$startPos{ $s[ 1 ] } = 1;
+		}
+		else
+		{
+			#read is within the region - increment
+			if( ! defined( $startPos{ $s[ 1 ] } ) )
+			{
+				$reads_in_region ++;
+				$regionEnd = $s[ 1 ];
+				$startPos{ $s[ 1 ] } = 1;
+			}
+		}
+		$lastEntry = $_;
+	}
+	my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
+	
+	print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
+	close( $cfh );
+	close( $ofh );
+	
+	return 1;
 }
 
 1;
