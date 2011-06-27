@@ -239,8 +239,10 @@ USAGE
 else
 {
     print qq[You did not specify an action!\n\n$USAGE];
-    exit;
 }
+
+print qq[RetroSeq finished successfully\n\n];
+exit;
 
 sub _findCandidates
 {
@@ -463,7 +465,7 @@ sub _findInsertions
     my $tfh;
     my $raw_candidates = qq[$output.candidates];
     open( my $dfh, qq[>$raw_candidates] ) or die $!;
-    print $dfh qq[FILTER: chr\tstart\tend\ttype\_sample\tDepth\tL_Fwd_both\tL_Rev_both\tL_Fwd_single\tL_Rev_single\tR_Fwd_both\tR_Rev_both\tR_Fwd_single\tR_Rev_single\tL_Last_both\tR_First_both\tDist\n];
+    print $dfh qq[FILTER: chr\tstart\tend\ttype\_sample\tL_Fwd_both\tL_Rev_both\tL_Fwd_single\tL_Rev_single\tR_Fwd_both\tR_Rev_both\tR_Fwd_single\tR_Rev_single\tL_Last_both\tR_First_both\tDist\n];
     close( $dfh );
     while(1)
     {

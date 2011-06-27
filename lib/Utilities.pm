@@ -141,7 +141,7 @@ sub _local_min_max
 sub testBreakPoint
 {
     die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 6;
-
+    
     my $chr = shift;
     my $refPos = shift;
     my $bam = shift;
@@ -158,7 +158,7 @@ sub testBreakPoint
 	my $lastBluePos = 0;my $firstBluePos = 100000000000;
 	
 	#also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
-	my $cmd = qq[samtools view $bam $chr:].($refPos-450).qq[-].($refPos+450).qq[ | ];
+	my $cmd = qq[samtools view $bam $chr:].($refPos-275).qq[-].($refPos+275).qq[ | ];
 	open( my $tfh, $cmd ) or die $!;
 	while( my $sam = <$tfh> )
 	{
