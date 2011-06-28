@@ -365,7 +365,7 @@ sub _findCandidates
         if( $s[ 3 ] >= $id && $s[ 2 ] >= $length )
         {
             $s[ 5 ] =~ /(\d+)_(\d+)/; #what is this?
-            $anchors{ $s[ 1 ] } = $1; #this could be a memory issue (possibly dump out to a file and then use unix join to intersect with the bed)
+            $anchors{ $s[ 1 ] } = [ $1, $s[ 4 ] ]; #this could be a memory issue (possibly dump out to a file and then use unix join to intersect with the bed)
         }
     }
     close( $efh );
@@ -389,8 +389,9 @@ sub _findCandidates
         my @s = split( /\t/, $anchor );
         if( defined( $anchors{ $s[ 3 ] } ) )
         {
-            my $fh = $TE_fh{ $anchors{ $s[ 3 ] } }; #get the ID of the type the read was aligned to
-            print $fh qq[$anchor\n];
+            my $fh = $TE_fh{ $anchors{ $s[ 3 ] }[ 0 ] }; #get the ID of the type the read was aligned to
+            my $mate_orientation = $anchors{ $s[ 3 ] }[ 1 ];
+            print $fh qq[$anchor\t$mate_orientation\n];
         }
     }
     close( $cfh );
