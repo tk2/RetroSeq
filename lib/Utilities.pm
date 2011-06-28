@@ -101,7 +101,7 @@ sub getCandidateBreakPointsDepth
 	close( $tfh );
 	
 	my @res = _local_min_max( %depths );
-	if( !@res || !$res[ 0 ] ){print qq[WARNING: no max/min returned for $chr:$start-$end\n];print $dfh qq[$chr\t$start\t$end\tnodepth\n\n];next;}
+	if( !@res || !$res[ 0 ] ){print qq[WARNING: no max/min returned for $chr:$start-$end\n];print $dfh qq[$chr\t$start\t$end\tnodepth\n\n];return undef;}
 	my %min = %{$res[ 0 ]};
 	my @positions = keys( %min );
 	

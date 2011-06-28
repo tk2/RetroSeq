@@ -364,7 +364,7 @@ sub _findCandidates
         #    check min identity	  check min length
         if( $s[ 3 ] >= $id && $s[ 2 ] >= $length )
         {
-            $s[ 5 ] =~ /(\d+)_(\d+)/;
+            $s[ 5 ] =~ /(\d+)_(\d+)/; #what is this?
             $anchors{ $s[ 1 ] } = $1; #this could be a memory issue (possibly dump out to a file and then use unix join to intersect with the bed)
         }
     }
@@ -573,7 +573,10 @@ sub _filterCallsBedMinima
 	    
 	    my $start = $originalCallA[ 1 ];my $end = $originalCallA[ 2 ];my $chr = $originalCallA[ 0 ];
 	    
-	    my @t = @{ Utilities::getCandidateBreakPointsDepth( $originalCallA[0], $originalCallA[1], $originalCallA[2], $bam, $ref, $dfh ) };
+	    my $t = Utilities::getCandidateBreakPointsDepth( $originalCallA[0], $originalCallA[1], $originalCallA[2], $bam, $ref, $dfh );
+	    if( ! $t ){warn qq[Failed to get candidate breakpoints for call $originalCall\n];next;}
+	    my @t = @{ $t };
+	    
 	    my @positions = @{ $t[ 0 ] };my %min = %{ $t[ 1 ] };
 	    
 	    #test each point to see if has the desired signature of fwd / rev pointing reads
