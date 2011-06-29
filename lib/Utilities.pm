@@ -29,7 +29,7 @@ sub filterOutRegions
     my @calls;
     open( my $ifh, $inputBED ) or die $!;
     while( my $line = <$ifh> ){chomp($line);push(@calls,$line);}
-    close( $ifh );    
+    close( $ifh );
 
     open( my $ffh, $filterBED ) or die $!;
     my $filtered = 0;
@@ -303,7 +303,7 @@ sub getCandidateBreakPointsDir
     
     unlink( qq[/tmp/$$.fwd.bam] ) > 0 or print qq[WARNING: Failed to delete /tmp/$$.fwd.bam files];
     
-    if( $fwdpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate fwd heterozygous breakpoints for $chr:$start-$end\n];return undef;}
+    if( !$fwdpos || $fwdpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate fwd heterozygous breakpoints for $chr:$start-$end\n];return undef;}
     
     #get the coverage of the reverse orientated reads
     #                   get sam                                 filter out low map Q reads                               mate is unmapped    mate not mapped in proper pair             mapped of rev strand
@@ -321,7 +321,7 @@ sub getCandidateBreakPointsDir
     
     unlink( qq[/tmp/$$.rev.bam] ) > 0 or print qq[WARNING: Failed to delete /tmp/$$.rev.bam files];
     
-    if( $revpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate rev heterozygous breakpoints for $chr:$start-$end\n];return undef;}
+    if( !$revpos || $revpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate rev heterozygous breakpoints for $chr:$start-$end\n];return undef;}
     
     my $positions = [ int(( $fwdpos + $revpos ) / 2) ];
     return $positions;
