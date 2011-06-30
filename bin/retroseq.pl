@@ -365,7 +365,7 @@ sub _findCandidates
         #    check min identity	  check min length
         if( $s[ 3 ] >= $id && $s[ 2 ] >= $length )
         {
-            $s[ 5 ] =~ /(\d+)_(\d+)/; #what is this?
+            $s[ 5 ] =~ /(\d+)_(\d+)/;
             $anchors{ $s[ 1 ] } = [ $1, $s[ 4 ] ]; #this could be a memory issue (possibly dump out to a file and then use unix join to intersect with the bed)
         }
     }
