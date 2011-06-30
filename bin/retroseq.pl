@@ -337,13 +337,14 @@ sub _findCandidates
     close( $tfh );
     
     #if there arent any candidates, then we are done
-    if( -s qq[$$.candidates.fasta] > 0 )
+    if( -s $candidatesFasta == 0 )
     {
         if( $clean )
         {
             #delete the intermediate files
             unlink( glob( qq[$$.*] ) ) or die qq[Failed to remove intermediate files: $!];
         }
+        print qq[Failed to find any candidate reads - exiting];
         exit;
     }
     
