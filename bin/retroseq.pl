@@ -41,7 +41,7 @@ my $DEFAULT_ANCHORQ = 20;
 my $DEFAULT_MAX_DEPTH = 200;
 my $DEFAULT_READS = 5;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
-my $MAX_READ_GAP_IN_REGION = 200;
+my $MAX_READ_GAP_IN_REGION = 50;
 
 my $HEADER = qq[#retroseq v:$VERSION\n#START_CANDIDATES];
 my $FOOTER = qq[#END_CANDIDATES];
@@ -631,10 +631,11 @@ sub _filterCallsBedMinima
 	        foreach my $candPos( @{$candidateBreaks} )
 	        {
 	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, $bam, $minMapQ, $originalCall, $dfh );
-	            if( $result && $result->[0] < $minRatio )
+	            if( $result )
 	            {
 	                $minRatio = $result->[0];
 	                $minRatioCall = $result->[1];
+	                last;
 	            }
 	            $tested ++;last if $tested > 5;
 	        }

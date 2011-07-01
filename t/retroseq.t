@@ -52,4 +52,16 @@ $t = Utilities::testBreakPoint(11,428063,'/lustre/scratch102/user/tk2/RetroSeq/H
 isa_ok( $t, 'ARRAY' );
 foreach( @{$t} ){print qq[$_\n];}
 
+$t = Utilities::testBreakPoint(20,2252212,'/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam',20,qq[20	2251212	2253212	Alu	10],$dfh);
+isa_ok( $t, 'ARRAY' );
+foreach( @{$t} ){print qq[$_\n];}
+
+$t = Utilities::testBreakPoint(20,2252177,'/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam',20,qq[20	2251212	2253212	Alu	10],$dfh);
+isa_ok( $t, 'ARRAY' );
+foreach( @{$t} ){print qq[$_\n];}
+
+$t = Utilities::testBreakPoint(1,7486242,'/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18508.raw.bam',20,qq[11	428029	428070	Alu	10],$dfh);
+isa_ok( $t, 'ARRAY' );
+foreach( @{$t} ){print qq[$_\n];}
+
 close( $dfh );

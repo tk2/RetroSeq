@@ -158,7 +158,7 @@ sub testBreakPoint
 	my $lastBluePos = 0;my $firstBluePos = 100000000000;
 	
 	#also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
-	my $cmd = qq[samtools view $bam $chr:].($refPos-275).qq[-].($refPos+275).qq[ | ];
+	my $cmd = qq[samtools view $bam $chr:].($refPos-220).qq[-].($refPos+220).qq[ | ];
 	open( my $tfh, $cmd ) or die $!;
 	while( my $sam = <$tfh> )
 	{
@@ -286,9 +286,17 @@ sub getCandidateBreakPointsDir
     if( $chr !~ /^\d+$/ || $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
     if( ! -f $bam ){die qq[ERROR: Cant find bam file: $bam];}
     
+    #get the reads over the region into a bam on local /tmp first
+    my $cmd = qq[samtools view $bam -h -b $chr:].($start-1000).qq[-].($end+1000).qq[ > /tmp/$$.region.bam; samtools index /tmp/$$.region.bam];
+    if( system( $cmd ) != 0 )
+    {
+        die qq[WARNING: Failed to extract region from BAM for call $chr:$start-$end];
+        return undef;
+    }
+    
     #get the coverage of the forward orientated reads
     #                   get sam                                 filter out low map Q reads                               mate is unmapped    mate not mapped in proper pair             mapped of fwd strand
-    my $cmd = qq[samtools view -h $bam $chr:$start-$end | gawk -F"\\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)==0' | samtools view -bS - > /tmp/].qq[$$.fwd.bam];
+    $cmd = qq[samtools view -h /tmp/$$.region.bam $chr:$start-$end | gawk -F"\\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)==0' | samtools view -bS - > /tmp/].qq[$$.fwd.bam];
     my $fwdpos = undef;
     if( ! system( $cmd ) )
     {
@@ -301,13 +309,13 @@ sub getCandidateBreakPointsDir
     }
     else{warn qq[Failed to run samtools over region to generate fwd reads bam: $cmd\n];return undef;}
     
-    unlink( qq[/tmp/$$.fwd.bam] ) > 0 or print qq[WARNING: Failed to delete /tmp/$$.fwd.bam files];
+    unlink( qq[/tmp/$$.fwd.bam] ) > 0 or warn qq[WARNING: Failed to delete /tmp/$$.fwd.bam files];
     
     if( !$fwdpos || $fwdpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate fwd heterozygous breakpoints for $chr:$start-$end\n];return undef;}
     
     #get the coverage of the reverse orientated reads
     #                   get sam                                 filter out low map Q reads                               mate is unmapped    mate not mapped in proper pair             mapped of rev strand
-    $cmd = qq[samtools view $bam -h $chr:$start-$end | gawk -F"\\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)' | samtools view -bS - > /tmp/].qq[$$.rev.bam];
+    $cmd = qq[samtools view /tmp/$$.region.bam -h $chr:$start-$end | gawk -F"\\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)' | samtools view -bS - > /tmp/].qq[$$.rev.bam];
     my $revpos = undef;
     if( ! system( $cmd ) )
     {
@@ -319,12 +327,27 @@ sub getCandidateBreakPointsDir
     }
     else{warn qq[Failed to run samtools over region to generate rev reads bam: $cmd\n];}
     
-    unlink( qq[/tmp/$$.rev.bam] ) > 0 or print qq[WARNING: Failed to delete /tmp/$$.rev.bam files];
+    unlink( qq[/tmp/$$.rev.bam] ) > 0 or warn qq[WARNING: Failed to delete /tmp/$$.rev.bam files];
     
     if( !$revpos || $revpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate rev heterozygous breakpoints for $chr:$start-$end\n];return undef;}
     
-    my $positions = [ int(( $fwdpos + $revpos ) / 2) ];
-    return $positions;
+    #find the point with the lowest depth between the candidate points
+    $cmd = qq[samtools view -h -b /tmp/$$.region.bam -h $chr:$fwdpos-$revpos > /tmp/$$.localised.bam];
+    my $lowestDPos = undef;
+    if( ! system( $cmd ) )
+    {
+        $cmd = qq[ samtools mpileup -A /tmp/$$.localised.bam | sort -k4,4n | head -1 | ].q[awk -F"\t" '{print $2}' | ];
+        open( my $tfh, $cmd ) or warn $!;
+        $lowestDPos = <$tfh>;
+        if( ! defined( $lowestDPos ) ){warn qq[WARNING: Failed to get the lowest depth pos for het call: $chr:$start-$end];}
+        else{chomp( $lowestDPos );}
+    }else{warn qq[Failed to run samtools over region to generate localised reads bam: $cmd\n];}
+    
+    unlink( qq[/tmp/$$.region.bam], qq[/tmp/$$.region.bam.bai], qq[/tmp/$$.localised.bam] ) > 0 or warn qq[WARNING: Failed to delete /tmp/$$.region.bam files];
+    
+    my @positions = (int(( $fwdpos + $revpos ) / 2), int($fwdpos+(($revpos-$fwdpos)*0.25)), int($fwdpos+(($revpos-$fwdpos)*0.75)));
+    push( @positions, $lowestDPos ) if( $lowestDPos );
+    return \@positions;
 }
 
 #convert the individual read calls to calls for putative TE insertion calls
