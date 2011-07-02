@@ -332,11 +332,11 @@ sub getCandidateBreakPointsDir
     if( !$revpos || $revpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate rev heterozygous breakpoints for $chr:$start-$end\n];return undef;}
     
     #find the point with the lowest depth between the candidate points
-    $cmd = qq[samtools view -h -b /tmp/$$.region.bam -h $chr:$fwdpos-$revpos > /tmp/$$.localised.bam];
+    $cmd = qq[samtools view -h -b /tmp/$$.region.bam -h $chr:].($fwdpos-200).qq[-].($revpos+200).qq[ > /tmp/$$.localised.bam];
     my $lowestDPos = undef;
     if( ! system( $cmd ) )
     {
-        $cmd = qq[ samtools mpileup -A /tmp/$$.localised.bam | sort -k4,4n | head -1 | ].q[awk -F"\t" '{print $2}' | ];
+        $cmd = qq[ samtools mpileup -A /tmp/$$.localised.bam | ].q[ awk -F"\t" '$2>$fwdpos&&$2<$revpos' | sort -k4,4n | head -1 | ].q[awk -F"\t" '{print $2}' | ];
         open( my $tfh, $cmd ) or warn $!;
         $lowestDPos = <$tfh>;
         if( ! defined( $lowestDPos ) ){warn qq[WARNING: Failed to get the lowest depth pos for het call: $chr:$start-$end];}
@@ -348,6 +348,77 @@ sub getCandidateBreakPointsDir
     my @positions = (int(( $fwdpos + $revpos ) / 2), int($fwdpos+(($revpos-$fwdpos)*0.25)), int($fwdpos+(($revpos-$fwdpos)*0.75)));
     push( @positions, $lowestDPos ) if( $lowestDPos );
     return \@positions;
+}
+
+sub getCandidateBreakPointsDirVote
+{
+    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 5;
+ 
+    my $chr = shift;
+    my $start = shift;
+    my $end = shift;
+    my $bam = shift;
+    my $minQ = shift;
+    
+    if( $chr !~ /^\d+$/ || $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
+    if( ! -f $bam ){die qq[ERROR: Cant find bam file: $bam];}
+    
+    my %fwdCount;
+    my %revCount;
+    
+    #get the coverage of the forward orientated reads
+    #                   get sam                                 filter out low map Q reads                               mate is unmapped    mate not mapped in proper pair             mapped of fwd strand
+    my $cmd = qq[samtools view $bam $chr:$start-$end |];
+    open( my $tfh, $cmd ) or die $!;
+    my $fwdCurrentPos = $start;
+    my $revCurrentPos = $start;
+    $fwdCount{ $fwdCurrentPos - 1 } = 0;
+    $revCount{ $revCurrentPos - 1 } = 0;
+    while( my $sam = <$tfh> )
+    {
+        chomp( $sam );
+        my @samL = split( /\t/, $sam );
+        my $flag = $samL[ 1 ];
+        
+        #update the counts to the current position
+        for(my $i=$fwdCurrentPos;$i<$samL[3];$i++ ){$fwdCount{$i}=$fwdCount{$i-1};}
+        for(my $i=$revCurrentPos;$i<$samL[3];$i++ ){$revCount{$i}=$revCount{$i-1};}
+        
+        next unless $samL[ 4 ] > $minQ;
+        #       paired technology                       not paired correctly                    is on fwd strand
+        if( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && !( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #fwd supporting read
+        {
+            $fwdCount{ $samL[ 3 ] } = $fwdCount{ $samL[ 3 ] - 1 } + 1;
+            $fwdCurrentPos = $samL[ 3 ] + 1;
+        }
+        #       paired technology                       not paired correctly                    is on rev strand
+        elsif( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && ( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #rev supporting read
+        {
+            $revCount{ $samL[ 3 ] } = $revCount{ $samL[ 3 ] - 1 } - 1;
+            $revCurrentPos = $samL[ 3 ] + 1;
+        }
+    }
+    close( $tfh );
+    
+    #offset the rev array
+    my @s = sort {$a<=>$b} ( values( %revCount ) );
+    my $min = $s[ 0 ];
+    my @keys = keys(%revCount);
+    foreach my $key(@keys){$revCount{$key}+=abs($min);}
+    
+    #now find the position where the sum of the two counts maximises
+    my $maxPos = $start;my $maxVal = $fwdCount{$start}+$revCount{$start};
+    
+    for(my $i=$start;$i<$revCurrentPos&&$i<$fwdCurrentPos;$i++)
+    {
+        if( $fwdCount{$i}+$revCount{$i} > $maxVal )
+        {
+            $maxPos = $i;
+            $maxVal = $fwdCount{$i}+$revCount{$i};
+        }
+    }
+    
+    return $maxPos;
 }
 
 #convert the individual read calls to calls for putative TE insertion calls

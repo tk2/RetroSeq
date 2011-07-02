@@ -64,4 +64,16 @@ $t = Utilities::testBreakPoint(1,7486242,'/lustre/scratch102/user/tk2/RetroSeq/H
 isa_ok( $t, 'ARRAY' );
 foreach( @{$t} ){print qq[$_\n];}
 
+$t = Utilities::getCandidateBreakPointsDirVote(20,53560000,53561000,'/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam',20);
+ok($t gt 0, "break point vote");
+print qq[$t\n];
+
+$t = Utilities::getCandidateBreakPointsDirVote(11,25671300,25672000,'/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam',20);
+ok($t gt 0, "break point vote");
+print qq[$t\n];
+
+$t = Utilities::getCandidateBreakPointsDirVote(11,427600,428500,'/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam',20);
+ok($t gt 0, "break point vote");
+print qq[$t\n];
+
 close( $dfh );
