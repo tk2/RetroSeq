@@ -166,8 +166,8 @@ sub testBreakPoint
 	    chomp( $sam );
 	    my @s = split( /\t/, $sam );
 	            next unless $s[ 4 ] > $minMapQ;
-	            #        the mate is mapped                        not paired correctly                        or mate ref name is different chr
-	            if( !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'}) && ( ( !( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) ) || ( $s[ 6 ] ne '=' ) ) )
+	            #        the mate is mapped                       or mate ref name is different chr
+	            if( !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'}) && ( $s[ 6 ] ne '=' ) )
 	            {
 	                if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
 	                {
