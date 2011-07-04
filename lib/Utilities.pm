@@ -144,6 +144,7 @@ sub testBreakPoint
     
     my $chr = shift;
     my $refPos = shift;
+    die qq[Non integer value passed as refPos] unless defined( $refPos ) && $refPos =~ /^\d+$/;
     my $bam = shift;
     my $minMapQ = shift;
     my $originalCall = shift;
@@ -359,7 +360,7 @@ sub getCandidateBreakPointsDirVote
     my $end = shift;
     my $bam = shift;
     my $minQ = shift;
-    
+
     if( $chr !~ /^\d+$/ || $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
     if( ! -f $bam ){die qq[ERROR: Cant find bam file: $bam];}
     
@@ -369,6 +370,7 @@ sub getCandidateBreakPointsDirVote
     #get the coverage of the forward orientated reads
     #                   get sam                                 filter out low map Q reads                               mate is unmapped    mate not mapped in proper pair             mapped of fwd strand
     my $cmd = qq[samtools view $bam $chr:$start-$end |];
+    
     open( my $tfh, $cmd ) or die $!;
     my $fwdCurrentPos = $start;
     my $revCurrentPos = $start;
@@ -384,16 +386,19 @@ sub getCandidateBreakPointsDirVote
         for(my $i=$fwdCurrentPos;$i<$samL[3];$i++ ){$fwdCount{$i}=$fwdCount{$i-1};}
         for(my $i=$revCurrentPos;$i<$samL[3];$i++ ){$revCount{$i}=$revCount{$i-1};}
         
-        next unless $samL[ 4 ] > $minQ;
+        next if $samL[ 4 ] < $minQ;
+        next if ( $flag & $$BAMFLAGS{'duplicate'} );
         #       paired technology                       not paired correctly                    is on fwd strand
         if( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && !( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #fwd supporting read
         {
+            no warnings 'uninitialized'; #perl warns when the value is 0
             $fwdCount{ $samL[ 3 ] } = $fwdCount{ $samL[ 3 ] - 1 } + 1;
             $fwdCurrentPos = $samL[ 3 ] + 1;
         }
         #       paired technology                       not paired correctly                    is on rev strand
         elsif( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && ( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #rev supporting read
         {
+            no warnings 'uninitialized'; #perl warns when the value is 0
             $revCount{ $samL[ 3 ] } = $revCount{ $samL[ 3 ] - 1 } - 1;
             $revCurrentPos = $samL[ 3 ] + 1;
         }
@@ -407,18 +412,26 @@ sub getCandidateBreakPointsDirVote
     foreach my $key(@keys){$revCount{$key}+=abs($min);}
     
     #now find the position where the sum of the two counts maximises
-    my $maxPos = $start;my $maxVal = $fwdCount{$start}+$revCount{$start};
+    my $maxPos = $start;my @maxPoss;my $maxVal = $fwdCount{$start}+$revCount{$start};
     
     for(my $i=$start;$i<$revCurrentPos&&$i<$fwdCurrentPos;$i++)
     {
         if( $fwdCount{$i}+$revCount{$i} > $maxVal )
         {
             $maxPos = $i;
+            @maxPoss = ();
+            push( @maxPoss, $i );
             $maxVal = $fwdCount{$i}+$revCount{$i};
+        }
+        elsif( $fwdCount{$i}+$revCount{$i} == $maxVal )
+        {
+            push( @maxPoss, $i );
         }
     }
     
-    return $maxPos;
+    $maxPos = $maxPoss[ int(scalar(@maxPoss)/2) ];
+    
+    return [$maxPos];
 }
 
 #convert the individual read calls to calls for putative TE insertion calls
@@ -446,7 +459,7 @@ sub convertToRegionBED
 		if( ! defined $lastEntry )
 		{
 			$regionStart = $s[ 1 ];
-			$regionEnd = $s[ 1 ];
+			$regionEnd = $s[ 2 ];
 			$regionChr = $s[ 0 ];
 			$reads_in_region = 1;
 			$startPos{ $s[ 1 ] } = 1;
@@ -455,13 +468,13 @@ sub convertToRegionBED
 		{
 			#done - call the region
 			my @s1 = split( /\t/, $lastEntry );
-			$regionEnd = $s1[ 1 ];
+			$regionEnd = $s1[ 2 ];
 			my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
 			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
 			
 			$reads_in_region = 1;
 			$regionStart = $s[ 1 ];
-			$regionEnd = $s[ 1 ];
+			$regionEnd = $s[ 2 ];
 			$regionChr = $s[ 0 ];
 			%startPos = ();
 			$startPos{ $s[ 1 ] } = 1;
@@ -470,7 +483,7 @@ sub convertToRegionBED
 		{
 			#call the region
 			my @s1 = split( /\t/, $lastEntry );
-			$regionEnd = $s1[ 1 ];
+			$regionEnd = $s1[ 2 ];
 			my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
 			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
 			
@@ -487,7 +500,7 @@ sub convertToRegionBED
 			if( ! defined( $startPos{ $s[ 1 ] } ) )
 			{
 				$reads_in_region ++;
-				$regionEnd = $s[ 1 ];
+				$regionEnd = $s[ 2 ];
 				$startPos{ $s[ 1 ] } = 1;
 			}
 		}

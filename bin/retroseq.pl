@@ -601,12 +601,12 @@ sub _filterCallsBedMinima
 	        }
 	        last if $newIndex == @positions;
 	        
-	        print qq[Testing breakpoint $positions[ $newIndex ]\n];
+	        print qq[Testing hom breakpoint $positions[ $newIndex ]\n];
 	        $lastRefIndex = $newIndex;
 	        my $depth = $min{$positions[$newIndex]};
 	        my $refPos = $positions[ $newIndex ];
 	        
-	        last unless $depth < $minDepth;
+	        last unless $depth <= $minDepth;
 	        
 	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, $bam, $minMapQ, $originalCall, $dfh );
 	        
@@ -625,11 +625,14 @@ sub _filterCallsBedMinima
 	    }
 	    elsif( $hets ) #if we are also testing for het calls - then try alternative method to call a het
 	    {
-	        my $candidateBreaks = Utilities::getCandidateBreakPointsDir( $originalCallA[ 0 ], $originalCallA[ 1 ], $originalCallA[ 2 ], $bam, $minMapQ );
+	        my $candidateBreaks = Utilities::getCandidateBreakPointsDirVote( $originalCallA[ 0 ], $originalCallA[ 1 ], $originalCallA[ 2 ], $bam, $minMapQ );
+	        next if( !defined( $candidateBreaks ) );
 	        
 	        my $tested = 0;
 	        foreach my $candPos( @{$candidateBreaks} )
 	        {
+	            last if( ! defined $candPos );
+	            print qq[Testing het breakpoint: $candPos\n];
 	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, $bam, $minMapQ, $originalCall, $dfh );
 	            if( $result )
 	            {

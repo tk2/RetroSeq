@@ -65,15 +65,23 @@ isa_ok( $t, 'ARRAY' );
 foreach( @{$t} ){print qq[$_\n];}
 
 $t = Utilities::getCandidateBreakPointsDirVote(20,53560000,53561000,'/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam',20);
-ok($t gt 0, "break point vote");
-print qq[$t\n];
+isa_ok( $t, 'ARRAY', "break point vote1" );
+foreach( @{$t} ){print qq[$_\n];}
 
 $t = Utilities::getCandidateBreakPointsDirVote(11,25671300,25672000,'/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam',20);
-ok($t gt 0, "break point vote");
-print qq[$t\n];
+isa_ok( $t, 'ARRAY', "break point vote2" );
+foreach( @{$t} ){print qq[$_\n];}
 
 $t = Utilities::getCandidateBreakPointsDirVote(11,427600,428500,'/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam',20);
-ok($t gt 0, "break point vote");
-print qq[$t\n];
+isa_ok( $t, 'ARRAY', "break point vote3" );
+foreach( @{$t} ){print qq[$_\n];}
+
+$t = Utilities::getCandidateBreakPointsDirVote(20,34458000,34459000,'/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam',20);
+isa_ok( $t, 'ARRAY', "break point vote3" );
+foreach( @{$t} ){print qq[$_\n];}
+
+$t = Utilities::testBreakPoint(20,34458559,'/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam',20,qq[20	428029	428070	Alu	10],$dfh);
+isa_ok( $t, 'ARRAY', 'break point test' );
+foreach( @{$t} ){print qq[$_\n];}
 
 close( $dfh );
