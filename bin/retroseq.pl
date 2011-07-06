@@ -1027,30 +1027,6 @@ sub _checkBinary
     }
 }
 
-sub _run_ssaha2
-{
-    my $ref = shift;
-    my $fasta = shift;
-    my $output = shift;
-    
-    #run ssaha in order to determine the reads that hit the retro ref
-	system( qq[ssaha2 -solexa $ref $fasta | egrep "ALIGNMENT|SSAHA2" > $output] ) == 0 or die qq[ERROR: failed to run ssaha of candidate reads\n];
-	
-	#check the program finished successfully...
-	open( my $tfh, $output ) or die qq[Failed to open ssaha output file: $!];
-	my $lastLine;
-	while( <$tfh>)
-	{
-	    chomp;
-	    $lastLine = $_;
-	}
-	close( $tfh );
-	
-	if( $lastLine !~ /^SSAHA2 finished\.$/ ){ die qq[SSAHA2 did not run to completion - please check: $output\n];}
-	
-	return 1;
-}
-
 #creates all the tags necessary for the VCF files
 sub _getVcfHeader
 {
