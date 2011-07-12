@@ -1173,3 +1173,36 @@ sub _mergeDiscoveryOutputs
     print $ofh $FOOTER.qq[\n];
     close( $ofh );
 }
+
+sub _checkBinary
+{
+    my $binary = shift;
+    my $version = undef;
+    if( @_ == 1 )
+    {
+        $version = shift;
+    }
+    
+    if( ! `which $binary` )
+    {
+        croak qq[Error: Cant find required binary $binary\n];
+    }
+    
+    if( $version )
+    {
+        my @v = split( /\./, $version );
+        open( my $bfh, qq[ $binary | ] ) or die "failed to run $binary\n";
+        while(<$bfh>)
+        {
+            chomp;
+            if( lc($_) =~ /version/ && $_ =~ /(\d+)\.(\d+)\.(\d+)/ )
+            {
+                if( $1.'.'.$2 < $v[ 0 ].'.'.$v[ 1 ] )
+                {
+                    die qq[\nERROR: $binary version $version is required - your version is $1.$2.$3\n];
+                }
+            }
+        }
+        close( $bfh );
+    }
+}
