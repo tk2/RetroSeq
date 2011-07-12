@@ -168,8 +168,8 @@ sub testBreakPoint
 	    chomp( $sam );
 	    my @s = split( /\t/, $sam );
 	            next unless $s[ 4 ] > $minMapQ;
-	            #        the mate is mapped                        not paired correctly                        or mate ref name is different chr
-	            if( !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'}) && ( ( !( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) ) || ( $s[ 6 ] ne '=' ) ) )
+	            #        the mate is mapped                       or mate ref name is different chr
+	            if( !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'}) && ( $s[ 6 ] ne '=' ) )
 	            {
 	                if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
 	                {
@@ -198,7 +198,7 @@ sub testBreakPoint
 	        my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
 	        my $dist = $firstBluePos - $lastBluePos;
 	        
-	        if( $lhsFwdBlue >= 5 && $rhsRevBlue >= 5 && $lhsFwd > 10 && $rhsRev > 10 && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) && $dist < 120 )
+	        if( $lhsFwdBlue >= 5 && $rhsRevBlue >= 5 && $lhsFwd >= 10 && $rhsRev >= 10 && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) && $dist < 120 )
 	        {
 	            my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
 	            my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];

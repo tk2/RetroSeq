@@ -1009,63 +1009,6 @@ sub _sortBED
     return 1;
 }
 
-sub _checkBinary
-{
-    my $binary = shift;
-    my $version = undef;
-    if( @_ == 1 )
-    {
-        $version = shift;
-    }
-    
-    if( ! `which $binary` )
-    {
-        croak qq[Error: Cant find required binary $binary\n];
-    }
-    
-    if( $version )
-    {
-        my @v = split( /\./, $version );
-        open( my $bfh, qq[ $binary | ] ) or die "failed to run $binary\n";
-        while(<$bfh>)
-        {
-            chomp;
-            if( lc($_) =~ /version/ && $_ =~ /(\d+)\.(\d+)\.(\d+)/ )
-            {
-                if( $1.'.'.$2 < $v[ 0 ].'.'.$v[ 1 ] )
-                {
-                    die qq[\nERROR: $binary version $version is required - your version is $1.$2.$3\n];
-                }
-            }
-        }
-        close( $bfh );
-    }
-}
-
-sub _run_ssaha2
-{
-    my $ref = shift;
-    my $fasta = shift;
-    my $output = shift;
-    
-    #run ssaha in order to determine the reads that hit the retro ref
-	system( qq[ssaha2 -solexa $ref $fasta | egrep "ALIGNMENT|SSAHA2" > $output] ) == 0 or die qq[ERROR: failed to run ssaha of candidate reads\n];
-	
-	#check the program finished successfully...
-	open( my $tfh, $output ) or die qq[Failed to open ssaha output file: $!];
-	my $lastLine;
-	while( <$tfh>)
-	{
-	    chomp;
-	    $lastLine = $_;
-	}
-	close( $tfh );
-	
-	if( $lastLine !~ /^SSAHA2 finished\.$/ ){ die qq[SSAHA2 did not run to completion - please check: $output\n];}
-	
-	return 1;
-}
-
 #creates all the tags necessary for the VCF files
 sub _getVcfHeader
 {
