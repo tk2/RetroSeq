@@ -152,7 +152,7 @@ USAGE
     print qq[\nMin anchor quality: $anchorQ\nMin percent identity: $id\nMin length for hit: $length\n\n];
     
     #test for samtools
-    _checkBinary( q[samtools] );
+    _checkBinary( q[samtools], qq[0.1.16] );
     
     _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $clean );
 }
@@ -198,7 +198,7 @@ USAGE
     }
     
     #test for samtools
-    _checkBinary( q[samtools] );
+    _checkBinary( q[samtools], qq[0.1.16] );
     _checkBinary( q[bcftools] );
     
     _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $chr, $clean, $filterFile, $heterozygous );
@@ -256,7 +256,7 @@ sub _findCandidates
     my $clean = shift;
     
     #test for exonerate
-    _checkBinary( q[exonerate] );
+    _checkBinary( q[exonerate], qq[2.2.0] );
     
     my $readgroupsFile = qq[$$.readgroups];
     if( $readgroups )
@@ -469,6 +469,7 @@ sub _findInsertions
     open( my $dfh, qq[>$raw_candidates] ) or die $!;
     print $dfh qq[FILTER: chr\tstart\tend\ttype\_sample\tL_Fwd_both\tL_Rev_both\tL_Fwd_single\tL_Rev_single\tR_Fwd_both\tR_Rev_both\tR_Fwd_single\tR_Rev_single\tL_Last_both\tR_First_both\tDist\n];
     close( $dfh );
+    my $sortedCandidatesBED;
     while(1)
     {
         my $line = <$ifh>;
@@ -492,13 +493,13 @@ sub _findInsertions
                 }
                 
                 #call the insertions
-                my $tempSorted = qq[$$.raw_reads.0.$count.tab];
-                _sortBED( $tempUnsorted, $tempSorted );
+                my $sortedCandidatesBED = qq[$$.raw_reads.0.$count.tab];
+                _sortBED( $tempUnsorted, $sortedCandidatesBED );
                 
                 #convert to a region BED (removing any candidates with very low numbers of reads)
                 print qq[Calling initial rough boundaries of insertions....\n];
                 my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
-                Utilities::convertToRegionBED( $tempSorted, $minReads, $sampleName, $MAX_READ_GAP_IN_REGION, $rawTECalls1 );
+                Utilities::convertToRegionBED( $sortedCandidatesBED, $minReads, $sampleName, $MAX_READ_GAP_IN_REGION, $rawTECalls1 );
                 
                 if( defined( $filterBED ) )
                 {
@@ -524,6 +525,20 @@ sub _findInsertions
         else
         {
             print $tfh qq[$line\n];
+        }
+    }
+    
+    #add predicted orientation for the calls
+    print qq[Orientating calls...\n];
+    foreach my $type ( keys( %typeBEDFiles ) )
+    {
+        if( $typeBEDFiles{ $type }{hom} && -f $typeBEDFiles{ $type }{hom} )
+        {
+            Utilities::annotateCallsBED( $typeBEDFiles{ $type }{hom}, $sortedCandidatesBED );
+        }
+        elsif( $hets && $typeBEDFiles{ $type }{het} && -f $typeBEDFiles{ $type }{het} )
+        {
+            Utilities::annotateCallsBED( $typeBEDFiles{ $type }{het}, $sortedCandidatesBED );
         }
     }
     
@@ -997,10 +1012,33 @@ sub _sortBED
 sub _checkBinary
 {
     my $binary = shift;
+    my $version = undef;
+    if( @_ == 1 )
+    {
+        $version = shift;
+    }
     
     if( ! `which $binary` )
     {
         croak qq[Error: Cant find required binary $binary\n];
+    }
+    
+    if( $version )
+    {
+        my @v = split( /\./, $version );
+        open( my $bfh, qq[ $binary | ] ) or die "failed to run $binary\n";
+        while(<$bfh>)
+        {
+            chomp;
+            if( lc($_) =~ /version/ && $_ =~ /(\d+)\.(\d+)\.(\d+)/ )
+            {
+                if( $1.'.'.$2 < $v[ 0 ].'.'.$v[ 1 ] )
+                {
+                    die qq[\nERROR: $binary version $version is required - your version is $1.$2.$3\n];
+                }
+            }
+        }
+        close( $bfh );
     }
 }
 

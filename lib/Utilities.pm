@@ -5,6 +5,8 @@ use warnings;
 use Carp;
 
 my $FILTER_WINDOW = 50;
+my $BREAKPOINT_WINDOW = 220;
+
 my $BAMFLAGS = 
 {
     'paired_tech'    => 0x0001,
@@ -159,7 +161,7 @@ sub testBreakPoint
 	my $lastBluePos = 0;my $firstBluePos = 100000000000;
 	
 	#also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
-	my $cmd = qq[samtools view $bam $chr:].($refPos-220).qq[-].($refPos+220).qq[ | ];
+	my $cmd = qq[samtools view $bam $chr:].($refPos-$BREAKPOINT_WINDOW).qq[-].($refPos+$BREAKPOINT_WINDOW).qq[ | ];
 	open( my $tfh, $cmd ) or die $!;
 	while( my $sam = <$tfh> )
 	{
@@ -513,6 +515,55 @@ sub convertToRegionBED
 	close( $ofh );
 	
 	return 1;
+}
+
+sub annotateCallsBED
+{
+    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 2;
+    
+    my $sortedCallsBED = shift;
+    my $sortedReadsBED = shift;
+    
+    #read through the supporting reads bed and pick up the reads in the vicinity of the calls
+    open( my $sfh, $sortedReadsBED ) or die qq[ERROR: Failed to open sorted reads BED: $sortedReadsBED];
+    open( my $cfh, $sortedCallsBED ) or die qq[ERROR: Failed to open calls bed];
+    open( my $ofh, qq[>$sortedCallsBED.dir] ) or die qq[ERROR: Failed to create new BED file];
+    my $currentCall = <$cfh>;chomp($currentCall);my ($techr,$testart,$teend,$tename,$tescore) = split( /\t/, $currentCall );
+    my $currentCallLHS = 0;my $currentCallRHS = 0;my $withinCall = 0;
+    my $fwd = 1;
+    while( <$sfh> )
+    {
+        chomp;
+        my ($chr,$start,$end,$name,$orientation) = split( /\t/, $_ );
+        
+        if( $chr eq $techr )
+        {
+            if( $end < $testart && $start > $testart - $BREAKPOINT_WINDOW )
+            {
+                if( $orientation eq '+' ){$currentCallLHS++;}else{$currentCallLHS--;}
+                $withinCall = 1;
+            }
+            elsif( $start > $teend && $end < $teend + $BREAKPOINT_WINDOW )
+            {
+                if( $orientation eq '+' ){$currentCallRHS++;}else{$currentCallRHS--;}
+                $withinCall = 1;
+            }
+            elsif( $withinCall && $end > $teend + $BREAKPOINT_WINDOW )
+            {
+                $fwd = 1;
+                if( $currentCallLHS > 0 && $currentCallRHS < 0 ){$fwd = 0;} #if it looks like a reverse insertions
+                print $ofh qq[$techr\t$testart\$teend\t$tename\t$tescore\t].$fwd ? qq[+\n] : qq[-\n];
+                $withinCall = 0;
+                $currentCall = <$cfh>;
+                last if( ! $currentCall );
+                chomp($currentCall);($techr,$testart,$teend,$tename,$tescore) = split( /\t/, $currentCall );
+            }
+        }
+    }
+    if( $withinCall ){print $ofh qq[$techr\t$testart\$teend\t$tename\t$tescore\t].$fwd ? qq[+\n] : qq[-\n];}
+    
+    exit;
+    close( $sfh );
 }
 
 1;
