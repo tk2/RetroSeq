@@ -456,7 +456,7 @@ sub _findInsertions
         $input_ = $input;
     }
     
-    my $sampleName = _getBAMSampleName( $bam );
+    my $sampleName = Utilities::getBAMSampleName( $bam );
     
     #for each type in the file - call the insertions
     open( my $ifh, $input_ ) or die $!;
@@ -469,7 +469,7 @@ sub _findInsertions
     open( my $dfh, qq[>$raw_candidates] ) or die $!;
     print $dfh qq[FILTER: chr\tstart\tend\ttype\_sample\tL_Fwd_both\tL_Rev_both\tL_Fwd_single\tL_Rev_single\tR_Fwd_both\tR_Rev_both\tR_Fwd_single\tR_Rev_single\tL_Last_both\tR_First_both\tDist\n];
     close( $dfh );
-    my $sortedCandidatesBED;
+    my %sortedCandidatesBED;
     while(1)
     {
         my $line = <$ifh>;
@@ -493,13 +493,13 @@ sub _findInsertions
                 }
                 
                 #call the insertions
-                my $sortedCandidatesBED = qq[$$.raw_reads.0.$count.tab];
-                _sortBED( $tempUnsorted, $sortedCandidatesBED );
+                $sortedCandidatesBED{$currentType} = qq[$$.raw_reads.0.$count.tab];
+                _sortBED( $tempUnsorted, $sortedCandidatesBED{$currentType} );
                 
                 #convert to a region BED (removing any candidates with very low numbers of reads)
                 print qq[Calling initial rough boundaries of insertions....\n];
                 my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
-                Utilities::convertToRegionBED( $sortedCandidatesBED, $minReads, $sampleName, $MAX_READ_GAP_IN_REGION, $rawTECalls1 );
+                Utilities::convertToRegionBED( $sortedCandidatesBED{$currentType}, $minReads, $sampleName, $MAX_READ_GAP_IN_REGION, $rawTECalls1 );
                 
                 if( defined( $filterBED ) )
                 {
@@ -534,11 +534,12 @@ sub _findInsertions
     {
         if( $typeBEDFiles{ $type }{hom} && -f $typeBEDFiles{ $type }{hom} )
         {
-            Utilities::annotateCallsBED( $typeBEDFiles{ $type }{hom}, $sortedCandidatesBED );
+            Utilities::annotateCallsBED( $typeBEDFiles{ $type }{hom}, $sortedCandidatesBED{$type} );
         }
-        elsif( $hets && $typeBEDFiles{ $type }{het} && -f $typeBEDFiles{ $type }{het} )
+        
+        if( $hets && $typeBEDFiles{ $type }{het} && -f $typeBEDFiles{ $type }{het} )
         {
-            Utilities::annotateCallsBED( $typeBEDFiles{ $type }{het}, $sortedCandidatesBED );
+            Utilities::annotateCallsBED( $typeBEDFiles{ $type }{het}, $sortedCandidatesBED{$type} );
         }
     }
     
@@ -697,7 +698,7 @@ sub _genotypeCallsMinimaTable
         die qq[Cant find BAM file: $_\n] unless -f $bam;
         die qq[Cant find BAM index for BAM: $bam\n] unless -f qq[$bam.bai];
         
-        my $s = _getBAMSampleName( $bam );
+        my $s = Utilities::getBAMSampleName( $bam );
         if( $s ){$sampleBAM{ $s } = $bam;}else{die qq[Failed to determine sample name for BAM: $bam\nCheck SM tag in the read group entries.\n];exit;}
     }close( $tfh );
     
@@ -817,35 +818,6 @@ sub _getCandidateTEReadNames
     return \%candidates;
 }
 
-sub _getBAMSampleName
-{
-    my $bam = shift;
-    
-    my %samples;
-    open( my $bfh, qq[samtools view -H $bam |] );
-    while( my $line = <$bfh> )
-    {
-        chomp( $line );
-        next unless $line =~ /^\@RG/;
-        my @s = split(/\t/, $line );
-        if( $s[ 6 ] && $s[ 6 ] =~ /^(SM):(\w+)/ && ! $samples{ $2 } ){$samples{ $2 } = 1;}
-    }
-    
-    my $sampleName = 'unknown';
-    if( %samples && keys( %samples ) > 0 )
-    {
-        $sampleName = join( "_", keys( %samples ) ); #if multiple samples - join the names into a string
-        print qq[Found sample: $sampleName\n];
-    }
-    else
-    {
-        print qq[WARNING: Cant determine sample name from BAM - setting to unknown\n];
-        $sampleName = 'unknown';
-    }
-    
-    return $sampleName; 
-}
-
 sub _checkDiscoveryOutput
 {
     my $file = shift;
@@ -893,8 +865,9 @@ sub _outputCalls
                 my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
                 my $ci1 = $s[ 1 ] - $pos;
                 my $ci2 = $s[ 2 ] - $pos;
+                my $dir = defined( $s[ 5 ] ) && length( $s[ 5 ] ) > 0 ? $s[ 5 ] : 'NA';
                 
-                print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\n];
+                print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\t$s[4]\t$dir\n];
                 
                 my %out;
                 $out{CHROM}  = $s[ 0 ];
@@ -904,7 +877,7 @@ sub _outputCalls
                 $out{REF}    = $refbase;
                 $out{QUAL}   = $s[ 4 ];
                 $out{FILTER} = ['NOT_VALIDATED'];
-                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],$dir] };
                 $out{FORMAT} = ['GT', 'GQ'];
                 
                 $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>/<INS:ME>];
@@ -928,8 +901,9 @@ sub _outputCalls
                 my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
                 my $ci1 = $s[ 1 ] - $pos;
                 my $ci2 = $s[ 2 ] - $pos;
+                my $dir = defined( $s[ 5 ] ) && length( $s[ 5 ] ) > 0 ? $s[ 5 ] : 'NA';
                 
-                print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\n];
+                print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\t$s[4]\t$dir\n];
                 
                 my %out;
                 $out{CHROM}  = $s[ 0 ];
@@ -939,7 +913,7 @@ sub _outputCalls
                 $out{REF}    = $refbase;
                 $out{QUAL}   = $s[ 4 ];
                 $out{FILTER} = ['NOT_VALIDATED'];
-                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],$dir] };
                 $out{FORMAT} = ['GT','GQ'];
                 
                 $out{gtypes}{$s[3]}{GT} = qq[$refbase/<INS:ME>];

@@ -12,6 +12,8 @@ if( -f qq[data/filtered.bed]){unlink(qq[data/filtered.bed]);}
 
 is(Utilities::filterOutRegions(qq[data/input.bed], qq[data/reference_set.bed], qq[data/filtered.bed]), 9, "region filter checks");
 
+is(Utilities::getBAMSampleName(qq[data/bam_header.bam]),'QTL210645', 'Sample identifier test' );
+
 my $t = Utilities::getCandidateBreakPointsDir( 2, 74124481, 74126081, '/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam', 30 );
 isa_ok( $t, 'ARRAY' );
 my @pos = @{$t};

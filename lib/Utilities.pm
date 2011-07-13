@@ -523,19 +523,22 @@ sub annotateCallsBED
     
     my $sortedCallsBED = shift;
     my $sortedReadsBED = shift;
-    
+    print qq[$sortedCallsBED\t$sortedReadsBED\n];
     #read through the supporting reads bed and pick up the reads in the vicinity of the calls
     open( my $sfh, $sortedReadsBED ) or die qq[ERROR: Failed to open sorted reads BED: $sortedReadsBED];
-    open( my $cfh, $sortedCallsBED ) or die qq[ERROR: Failed to open calls bed];
+    open( my $cfh, $sortedCallsBED ) or die qq[ERROR: Failed to open calls bed: $sortedCallsBED];
     open( my $ofh, qq[>$sortedCallsBED.dir] ) or die qq[ERROR: Failed to create new BED file];
-    my $currentCall = <$cfh>;chomp($currentCall);my ($techr,$testart,$teend,$tename,$tescore) = split( /\t/, $currentCall );
+    my $currentCall = <$cfh>;
+    if( ! $currentCall ){print qq[Found zero calls to orientate in $sortedCallsBED - returning\n];close($ofh);return;}
+    
+    chomp($currentCall);my ($techr,$testart,$teend,$tename,$tescore) = split( /\t/, $currentCall );
     my $currentCallLHS = 0;my $currentCallRHS = 0;my $withinCall = 0;
     my $fwd = 1;
     while( <$sfh> )
     {
         chomp;
         my ($chr,$start,$end,$name,$orientation) = split( /\t/, $_ );
-        
+        print qq[$chr\t$techr\t$withinCall\n];
         if( $chr eq $techr )
         {
             if( $end < $testart && $start > $testart - $BREAKPOINT_WINDOW )
@@ -552,7 +555,7 @@ sub annotateCallsBED
             {
                 $fwd = 1;
                 if( $currentCallLHS > 0 && $currentCallRHS < 0 ){$fwd = 0;} #if it looks like a reverse insertions
-                print $ofh qq[$techr\t$testart\$teend\t$tename\t$tescore\t].$fwd ? qq[+\n] : qq[-\n];
+                print $ofh qq[$techr\t$testart\t$teend\t$tename\t$tescore\t].($fwd > -1 ? qq[+\n] : qq[-\n] );
                 $withinCall = 0;
                 $currentCall = <$cfh>;
                 last if( ! $currentCall );
@@ -560,10 +563,45 @@ sub annotateCallsBED
             }
         }
     }
-    if( $withinCall ){print $ofh qq[$techr\t$testart\$teend\t$tename\t$tescore\t].$fwd ? qq[+\n] : qq[-\n];}
+    if( $withinCall ){print $ofh qq[$techr\t$testart\t$teend\t$tename\t$tescore\t].($fwd > -1 ? qq[+\n] : qq[-\n]);}
     
-    exit;
+    close( $ofh );
     close( $sfh );
+    
+    #rename the output file to the input file
+    rename(qq[$sortedCallsBED.dir],qq[$sortedCallsBED]) == 1 or die qq[Failed to rename orientated BED file: $sortedCallsBED.dir to $sortedCallsBED\n];
+}
+
+sub getBAMSampleName
+{
+    my $bam = shift;
+    
+    my %samples;
+    open( my $bfh, qq[samtools view -H $bam |] );
+    while( my $line = <$bfh> )
+    {
+        chomp( $line );
+        next unless $line =~ /^\@RG/;
+        my @s = split(/\t/, $line );
+        foreach my $tag (@s)
+        {
+            if( $tag && $tag =~ /^(SM):(\w+)/ && ! $samples{ $2 } ){$samples{ $2 } = 1;}
+        }
+    }
+    
+    my $sampleName = 'unknown';
+    if( %samples && keys( %samples ) > 0 )
+    {
+        $sampleName = join( "_", keys( %samples ) ); #if multiple samples - join the names into a string
+        print qq[Found sample: $sampleName\n];
+    }
+    else
+    {
+        print qq[WARNING: Cant determine sample name from BAM - setting to unknown\n];
+        $sampleName = 'unknown';
+    }
+    
+    return $sampleName; 
 }
 
 1;
