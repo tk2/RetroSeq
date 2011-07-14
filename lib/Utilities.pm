@@ -538,32 +538,35 @@ sub annotateCallsBED
     {
         chomp;
         my ($chr,$start,$end,$name,$orientation) = split( /\t/, $_ );
-        print qq[$chr\t$techr\t$withinCall\n];
-        if( $chr eq $techr )
-        {
-            if( $end < $testart && $start > $testart - $BREAKPOINT_WINDOW )
+        
+            if( $chr eq $techr )
             {
-                if( $orientation eq '+' ){$currentCallLHS++;}else{$currentCallLHS--;}
-                $withinCall = 1;
+                if( $end < $testart && $start > $testart - $BREAKPOINT_WINDOW )
+                {
+                    if( $orientation eq '+' ){$currentCallLHS++;}else{$currentCallLHS--;}
+                    $withinCall = 1;
+                }
+                elsif( $chr eq $techr && $start > $teend && $end < $teend + $BREAKPOINT_WINDOW )
+                {
+                    if( $orientation eq '+' ){$currentCallRHS++;}else{$currentCallRHS--;}
+                    $withinCall = 1;
+                }
             }
-            elsif( $start > $teend && $end < $teend + $BREAKPOINT_WINDOW )
-            {
-                if( $orientation eq '+' ){$currentCallRHS++;}else{$currentCallRHS--;}
-                $withinCall = 1;
-            }
-            elsif( $withinCall && $end > $teend + $BREAKPOINT_WINDOW )
+            
+            if( $withinCall && ($end > $teend + $BREAKPOINT_WINDOW || $techr ne $chr ) )
             {
                 $fwd = 1;
                 if( $currentCallLHS > 0 && $currentCallRHS < 0 ){$fwd = 0;} #if it looks like a reverse insertions
                 print $ofh qq[$techr\t$testart\t$teend\t$tename\t$tescore\t].($fwd > -1 ? qq[+\n] : qq[-\n] );
                 $withinCall = 0;
+                $currentCallLHS = 0;
+                $currentCallRHS = 0;
                 $currentCall = <$cfh>;
                 last if( ! $currentCall );
                 chomp($currentCall);($techr,$testart,$teend,$tename,$tescore) = split( /\t/, $currentCall );
             }
-        }
     }
-    if( $withinCall ){print $ofh qq[$techr\t$testart\t$teend\t$tename\t$tescore\t].($fwd > -1 ? qq[+\n] : qq[-\n]);}
+    if( $withinCall ){if( $currentCallLHS > 0 && $currentCallRHS < 0 ){$fwd = 0;}print $ofh qq[$techr\t$testart\t$teend\t$tename\t$tescore\t].($fwd > -1 ? qq[+\n] : qq[-\n]);}
     
     close( $ofh );
     close( $sfh );

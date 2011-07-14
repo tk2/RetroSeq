@@ -162,7 +162,7 @@ elsif( $call )
 Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-filter <BED file> -cleanup -reads <int> -depth <int> -hets]
     
     -bam            BAM file of paired reads mapped to reference genome
-    -input          Either a single output file from the discover stage OR a prefix of a set of files from discovery to be combined for calling
+    -input          Either a single output file from the discover stage OR a pattern match of a set of files from discovery to be combined for calling OR a fofn of discovery stage output files
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
     [-hets          Call heterozygous insertions. Default is homozygous.]
@@ -442,7 +442,28 @@ sub _findInsertions
     
     _checkBinary( 'sort' ); #sort cmd required
     
-    my @files = glob( qq[$input*] );
+    my @files;
+    if( -f $input )
+    {
+        my $first = `head -1 $input`;chomp( $first );
+        if( -f $first ) #is this a fofn
+        {
+            open( my $ifh, $input ) or die qq[failed to open fofn of discovery output files: $input\n];
+            while(my $file = <$ifh> )
+            {
+                chomp( $file );
+                if( -f $file ){push(@files, $file);}else{die qq[Cant find discovery output file: $file\n];}
+            }
+            print qq[Found ].scalar(@files).qq[ discovery stage input files\n\n];
+            close( $ifh );
+        }else{push( @files, $input );}#looks like a discovery output file
+    }
+    else
+    {
+        @files = glob( qq[$input*] );
+        die qq[Cant find any inputs files with prefix $input*\n];
+    }
+    
     my $input_;
     if( @files && @files > 1 )
     {
