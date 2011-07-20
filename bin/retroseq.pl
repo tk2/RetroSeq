@@ -33,7 +33,7 @@ use lib dirname(__FILE__).'/../lib/';
 use Vcf;
 use Utilities;
 
-my $VERSION = 0.1;
+my $VERSION = 0.2;
 
 my $DEFAULT_ID = 90;
 my $DEFAULT_LENGTH = 36;
@@ -43,7 +43,7 @@ my $DEFAULT_READS = 5;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 50;
 
-my $HEADER = qq[#retroseq v:$VERSION\n#START_CANDIDATES];
+my $HEADER = qq[#retroseq v:].substr($VERSION,0,1);
 my $FOOTER = qq[#END_CANDIDATES];
 
 my $BAMFLAGS = 
@@ -61,7 +61,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $chr, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $help);
 
 GetOptions
 (
@@ -83,12 +83,12 @@ GetOptions
     'reads=s'       =>  \$reads,
     'depth=s'       =>  \$depth,
     'noclean'       =>  \$noclean,
-    'chr=s'         =>  \$chr,
+    'region=s'      =>  \$region,
     'tmp=s'         =>  \$tmpdir,
-    'chr=s'         =>  \$chr,
     'rgs=s'         =>  \$readgroups,
-    'hets'           =>  \$heterozygous,
+    'hets'          =>  \$heterozygous,
     'filter=s'      =>  \$filterFile,
+    'orientate=s'   =>  \$orientate,
     'h|help'        =>  \$help,
 );
 
@@ -104,10 +104,10 @@ my $USAGE = <<USAGE;
 Usage: $0 -<command> options
 
             -discover       Takes a BAM and a set of reference TE (fasta) and calls candidate supporting read pairs (BED output)
-            -call           Takes multiple output of discovery stage (can be multiple files of same sample e.g. multiple lanes) and a BAM and outputs a VCF of TE calls
+            -call           Takes multiple output of discovery stage and a BAM and outputs a VCF of TE calls
             -genotype       Input is a VCF of TE calls and a set of sample BAMs, output is a new VCF with genotype calls for new samples
             
-NOTE: $0 requires samtools, exonerate, unix sort to be in the default path
+NOTE: $0 requires samtools, bcftools, exonerate, unix sort to be in the default path
 
 USAGE
 
@@ -152,7 +152,7 @@ USAGE
     print qq[\nMin anchor quality: $anchorQ\nMin percent identity: $id\nMin length for hit: $length\n\n];
     
     #test for samtools
-    _checkBinary( q[samtools], qq[0.1.16] );
+    Utilities::checkBinary( q[samtools], qq[0.1.16] );
     
     _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $clean );
 }
@@ -161,13 +161,14 @@ elsif( $call )
     ( $bam && $input && $ref && $output ) or die <<USAGE;
 Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-filter <BED file> -cleanup -reads <int> -depth <int> -hets]
     
-    -bam            BAM file of paired reads mapped to reference genome
-    -input          Either a single output file from the discover stage OR a pattern match of a set of files from discovery to be combined for calling OR a fofn of discovery stage output files
+    -bam            BAM file OR BAM fofn
+    -input          Either a single output file from the discover stage OR a prefix of a set of files from discovery to be combined for calling OR a fofn of discovery stage output files
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
     [-hets          Call heterozygous insertions. Default is homozygous.]
+    [-orientate     Attempt to predicate the orientation of the calls. Default is no.]
     [-filter        BED file of regions to exclude from final calls e.g. reference elements, low complexity etc.]
-    [-chr           call a particular chromosome only]
+    [-region        Call a particular chromosome only (chr) OR region (chr:start-end) only]
     [-depth         Max average depth of a region to be considered for calling. Default is 200.]
     [-reads         It is the minimum number of reads required to make a call. Default is 5. Parameter is optional.]
     [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
@@ -175,8 +176,8 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-f
     
 USAGE
     
-    croak qq[Cant find BAM: $bam] unless -f $bam;
-    croak qq[Cant find BAM index: $bam.bai] unless -f $bam.qq[.bai];
+    croak qq[Cant find BAM or BAM fofn: $bam] unless -f $bam;
+    
     if( ! -f $input )
     {
         my @files = glob( qq[$input*] );
@@ -198,10 +199,11 @@ USAGE
     }
     
     #test for samtools
-    _checkBinary( q[samtools], qq[0.1.16] );
-    _checkBinary( q[bcftools] );
+    Utilities::checkBinary( q[samtools], qq[0.1.16] );
+    Utilities::checkBinary( q[bcftools] );
+    Utilities::checkBinary( q[exonerate], qq[2.2.0] );
     
-    _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $chr, $clean, $filterFile, $heterozygous );
+    _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate );
 }
 elsif( $genotype )
 {
@@ -228,13 +230,12 @@ USAGE
     
     my $clean = defined( $noclean ) ? 0 : 1;
     $reads = defined( $reads ) && $reads =~ /^\d+$/ ? $reads > -1 : $DEFAULT_MIN_GENOTYPE_READS;
-    $chr = defined( $chr ) ? $chr : 'all';
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
     $id = defined( $id ) && $id < 101 && $id > 0 ? $id : $DEFAULT_ID;
     $length = defined( $length ) && $length > 25 ? $length : $DEFAULT_LENGTH;
     $tmpdir = defined( $tmpdir ) && -d $tmpdir ? $tmpdir : getcwd();
     
-    _genotype( $bams, $input, $eRefFofn, $reads, $chr, $anchorQ, $id, $length, $tmpdir, $output, $clean );
+    _genotype( $bams, $input, $eRefFofn, $reads, $region, $anchorQ, $id, $length, $tmpdir, $output, $clean );
 }
 else
 {
@@ -256,7 +257,7 @@ sub _findCandidates
     my $clean = shift;
     
     #test for exonerate
-    _checkBinary( q[exonerate], qq[2.2.0] );
+    Utilities::checkBinary( q[exonerate], qq[2.2.0] );
     
     my $readgroupsFile = qq[$$.readgroups];
     if( $readgroups )
@@ -435,12 +436,13 @@ sub _findInsertions
     my $minReads = shift;
     my $depth = shift;
     my $minQ = shift;
-    my $chr = shift;
+    my $region = shift;
     my $clean = shift;
     my $filterBED  = shift;
     my $hets = shift;
+    my $orientate = shift;
     
-    _checkBinary( 'sort' ); #sort cmd required
+    Utilities::checkBinary( 'sort' ); #sort cmd required
     
     my @files;
     if( -f $input )
@@ -464,6 +466,21 @@ sub _findInsertions
         die qq[Cant find any inputs files with prefix $input*\n];
     }
     
+    my @bams;
+    my $first = `head -1 $bam`;chomp( $first );
+    if( -f $first ) #is this a fofn
+    {
+        open( my $ifh, $bam ) or die qq[failed to BAM fofn: $input\n];
+        while(my $file = <$ifh> )
+        {
+            chomp( $file );
+            if( -f $file && -f $file.qq[.bai] ){push(@bams, $file);}else{die qq[Cant find BAM input file or BAM index file: $file\n];}
+        }
+        print qq[Found ].scalar(@bams).qq[ BAM files\n\n];
+        close( $ifh );
+    }
+    else{if( -f $bam && -f $bam.qq[.bai] ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
+    
     my $input_;
     if( @files && @files > 1 )
     {
@@ -477,7 +494,20 @@ sub _findInsertions
         $input_ = $input;
     }
     
-    my $sampleName = Utilities::getBAMSampleName( $bam );
+    my $sampleName = Utilities::getBAMSampleName( \@bams );
+    print qq[Calling sample $sampleName\n];
+    
+    #parse the region
+    my ($chr, $start, $end) = (undef, undef, undef);
+    if( defined( $region ) )
+    {
+        if( $region =~ /^([A-Za-z0-9]+):([0-9]+)-([0-9]+)$/ )
+        {
+            $chr = $1;$start=$2;$end=$3;
+            print qq[Restricting caling to region: $region\n];
+        }
+        else{$chr = $region;print qq[Restricting calling to Chr: $chr\n];}
+    }
     
     #for each type in the file - call the insertions
     open( my $ifh, $input_ ) or die $!;
@@ -509,8 +539,16 @@ sub _findInsertions
                 print qq[Calling TE type: $currentType\n];
                 if( defined( $chr ) )
                 {
-                    #filter the BED file by the chromosome only
-                    _filterBED( $chr, $tempUnsorted );
+                    if( defined( $start ) && defined( $end ) )
+                    {
+                        #filter the BED file by the chromosome only
+                        _filterBED( $tempUnsorted, $chr, $start, $end );
+                    }
+                    else
+                    {
+                        #filter the BED file by the chromosome only
+                        _filterBED( $tempUnsorted, $chr );
+                    }
                 }
                 
                 #call the insertions
@@ -533,14 +571,14 @@ sub _findInsertions
                 #remove extreme depth calls
                 print qq[Removing calls with extremely high depth (>$depth)....\n];
                 my $rawTECalls2 = qq[$$.raw_calls.2.$count.tab];
-                _removeExtremeDepthCalls( $rawTECalls1, $bam, $depth, $rawTECalls2, $raw_candidates );
+                _removeExtremeDepthCalls( $rawTECalls1, \@bams, $depth, $rawTECalls2, $raw_candidates );
                 
                 #new calling filtering code
                 print qq[Filtering and refining candidate regions into calls....\n];
                 $typeBEDFiles{ $currentType }{hom} = qq[$$.raw_calls.3.$count.hom.bed]; #homozygous calls
                 $typeBEDFiles{ $currentType }{het} = undef; #het calls
                 if( $hets ){$typeBEDFiles{ $currentType }{het} = qq[$$.raw_calls.3.$count.het.bed];}
-                _filterCallsBedMinima( $rawTECalls2, $bam, 10, $minQ, $ref, $raw_candidates, $hets, $typeBEDFiles{ $currentType }{hom}, $typeBEDFiles{ $currentType }{het} );
+                _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $typeBEDFiles{ $currentType }{hom}, $typeBEDFiles{ $currentType }{het} );
                 $count ++;
         }
         else
@@ -549,18 +587,21 @@ sub _findInsertions
         }
     }
     
-    #add predicted orientation for the calls
-    print qq[Orientating calls...\n];
-    foreach my $type ( keys( %typeBEDFiles ) )
+    if( $orientate )
     {
-        if( $typeBEDFiles{ $type }{hom} && -f $typeBEDFiles{ $type }{hom} )
+        #add predicted orientation for the calls
+        print qq[Orientating calls...\n];
+        foreach my $type ( keys( %typeBEDFiles ) )
         {
-            Utilities::annotateCallsBED( $typeBEDFiles{ $type }{hom}, $sortedCandidatesBED{$type} );
-        }
-        
-        if( $hets && $typeBEDFiles{ $type }{het} && -f $typeBEDFiles{ $type }{het} )
-        {
-            Utilities::annotateCallsBED( $typeBEDFiles{ $type }{het}, $sortedCandidatesBED{$type} );
+            if( $typeBEDFiles{ $type }{hom} && -f $typeBEDFiles{ $type }{hom} )
+            {
+                Utilities::annotateCallsBED( $typeBEDFiles{ $type }{hom}, $sortedCandidatesBED{$type} );
+            }
+            
+            if( $hets && $typeBEDFiles{ $type }{het} && -f $typeBEDFiles{ $type }{het} )
+            {
+                Utilities::annotateCallsBED( $typeBEDFiles{ $type }{het}, $sortedCandidatesBED{$type} );
+            }
         }
     }
     
@@ -585,7 +626,7 @@ sub _filterCallsBedMinima
     die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 9;
     
     my $bedin = shift;
-	my $bam = shift;
+	my @bams = @{ $_[ 0 ] };shift;
 	my $minDepth = shift;
 	my $minMapQ = shift;
 	my $ref = shift;
@@ -612,7 +653,7 @@ sub _filterCallsBedMinima
 	    
 	    my $start = $originalCallA[ 1 ];my $end = $originalCallA[ 2 ];my $chr = $originalCallA[ 0 ];
 	    
-	    my $t = Utilities::getCandidateBreakPointsDepth( $originalCallA[0], $originalCallA[1], $originalCallA[2], $bam, $ref, $dfh );
+	    my $t = Utilities::getCandidateBreakPointsDepth( $originalCallA[0], $originalCallA[1], $originalCallA[2], \@bams, $ref, $dfh );
 	    if( ! $t ){warn qq[Failed to get candidate breakpoints for call $originalCall\n];next;}
 	    my @t = @{ $t };
 	    
@@ -645,7 +686,7 @@ sub _filterCallsBedMinima
 	        
 	        last unless $depth <= $minDepth;
 	        
-	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, $bam, $minMapQ, $originalCall, $dfh );
+	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, \@bams, $minMapQ, $originalCall, $dfh );
 	        
 	        if( $result && $result->[0] < $minRatio )
 	        {
@@ -662,7 +703,7 @@ sub _filterCallsBedMinima
 	    }
 	    elsif( $hets ) #if we are also testing for het calls - then try alternative method to call a het
 	    {
-	        my $candidateBreaks = Utilities::getCandidateBreakPointsDirVote( $originalCallA[ 0 ], $originalCallA[ 1 ], $originalCallA[ 2 ], $bam, $minMapQ );
+	        my $candidateBreaks = Utilities::getCandidateBreakPointsDirVote( $originalCallA[ 0 ], $originalCallA[ 1 ], $originalCallA[ 2 ], \@bams, $minMapQ );
 	        next if( !defined( $candidateBreaks ) );
 	        
 	        my $tested = 0;
@@ -670,7 +711,7 @@ sub _filterCallsBedMinima
 	        {
 	            last if( ! defined $candPos );
 	            print qq[Testing het breakpoint: $candPos\n];
-	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, $bam, $minMapQ, $originalCall, $dfh );
+	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, \@bams, $minMapQ, $originalCall, $dfh );
 	            if( $result )
 	            {
 	                $minRatio = $result->[0];
@@ -719,7 +760,8 @@ sub _genotypeCallsMinimaTable
         die qq[Cant find BAM file: $_\n] unless -f $bam;
         die qq[Cant find BAM index for BAM: $bam\n] unless -f qq[$bam.bai];
         
-        my $s = Utilities::getBAMSampleName( $bam );
+        my $bams = [$bam];
+        my $s = Utilities::getBAMSampleName( $bams );
         if( $s ){$sampleBAM{ $s } = $bam;}else{die qq[Failed to determine sample name for BAM: $bam\nCheck SM tag in the read group entries.\n];exit;}
     }close( $tfh );
     
@@ -747,7 +789,7 @@ sub _genotypeCallsMinimaTable
         
         foreach my $sample ( sort( keys( %sampleBAM ) ) )
         {
-            my $quality = Utilities::genotypeRegion($chr, $start, $end, $sampleBAM{ $sample }, $minDepth, $minMapQ, $ref );
+            my $quality = Utilities::genotypeRegion($chr_, $start, $end, $sampleBAM{ $sample }, $minDepth, $minMapQ, $ref );
             if( $call )
 	        {
 	            $$entry{gtypes}{$sample}{GT} = $gt;
@@ -844,8 +886,8 @@ sub _checkDiscoveryOutput
     my $file = shift;
     
     open( my $tfh, $file ) or die $!;
-    my $line = <$tfh>;$line .= <$tfh>;chomp( $line );
-    if( $line ne $HEADER ){die qq[Malformed header of input file: $file\n];}
+    my $line = <$tfh>;chomp( $line );
+    if( $line !~ /^$HEADER/ ){die qq[Malformed header of input file: $file\n];}
     my $lastLine;
     while(<$tfh>){chomp;$lastLine=$_;}
     close( $tfh );
@@ -953,10 +995,13 @@ sub _outputCalls
 sub _removeExtremeDepthCalls
 {
 	my $calls = shift;
-	my $bam = shift;
+	my @bams = @{ $_[ 0 ] };shift;
 	my $maxDepth = shift;
 	my $outputbed = shift;
 	my $thrown_out_candidates_file = shift;
+	
+	my $bamStr = '';
+	foreach my $bam( @bams ){$bamStr.=qq[ $bam];}
 	
 	open( my $cfh, $calls ) or die $!;
 	open( my $ofh, ">$outputbed" ) or die $!;
@@ -975,7 +1020,7 @@ sub _removeExtremeDepthCalls
 		my $score = $s[ 4 ];
 		
 		#get the avg depth over the region
-		my $totalDepth = `samtools mpileup -r $chr:$start-$end $bam | awk -F"\t" '{SUM += \$4} END {print SUM}'`;chomp( $totalDepth );
+		my $totalDepth = `samtools mpileup -r $chr:$start-$end $bamStr | awk -F"\t" '{SUM += \$4} END {print SUM}'`;chomp( $totalDepth );
 		my $avgDepth = $totalDepth / $size;
 		if( $avgDepth < $maxDepth )
 		{
@@ -1009,6 +1054,8 @@ sub _getVcfHeader
 {
     my $vcf_out = shift;
     
+    $vcf_out->add_header_line({key=>'source',value=>'RetroSeq v'.$VERSION});
+    
     ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
     $vcf_out->add_header_line( {key=>'INFO',ID=>'SVTYPE',Number=>'1',Type=>'String', Description=>'Type of structural variant'} );
     
@@ -1022,7 +1069,7 @@ sub _getVcfHeader
     $vcf_out->add_header_line({key=>'FORMAT',ID=>'GT',Number=>'1',Type=>'String',Description=>"Genotype"});
     
     ##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype quality">
-    $vcf_out->add_header_line( {key=>'FORMAT', ID=>'GQ', Number=>'1', Type=>'Float,Description', Description=>'Genotype quality'} );
+    $vcf_out->add_header_line( {key=>'FORMAT', ID=>'GQ', Number=>'1', Type=>'Float', Description=>'Genotype quality'} );
     
     $vcf_out->add_header_line( {key=>'INFO', ID=>'NOT_VALIDATED', Number=>'0', Type=>'Flag', Description=>'Not validated experimentally'} );
     
@@ -1086,15 +1133,26 @@ sub _tab2Hash
 
 sub _filterBED
 {
-    my $chr = shift;
     my $bed = shift;
+    my $chr = shift;
+    my $start;my $end;
+    if( @_ == 2 )
+    {
+        $start = shift;
+        $end = shift;
+    }
     
     open( my $ofh, qq[>$$.filter.temp] ) or die $!;
     open( my $ifh, $bed ) or die $!;
     while( my $line = <$ifh> )
     {
         chomp( $line );
-        next unless $line =~ /^$chr\t/;
+        my @s = split( /\t/, $line );
+        if( defined($start) && defined($end) )
+        {
+            next unless $s[ 0 ] eq $chr && $s[ 1 ] > $start && $s[ 2 ] < $end;
+        }
+        else{next unless $line =~ /^$chr\t/;}
         print $ofh qq[$line\n];
     }
     close( $ifh );close( $ofh );
@@ -1169,35 +1227,3 @@ sub _mergeDiscoveryOutputs
     close( $ofh );
 }
 
-sub _checkBinary
-{
-    my $binary = shift;
-    my $version = undef;
-    if( @_ == 1 )
-    {
-        $version = shift;
-    }
-    
-    if( ! `which $binary` )
-    {
-        croak qq[Error: Cant find required binary $binary\n];
-    }
-    
-    if( $version )
-    {
-        my @v = split( /\./, $version );
-        open( my $bfh, qq[ $binary | ] ) or die "failed to run $binary\n";
-        while(<$bfh>)
-        {
-            chomp;
-            if( lc($_) =~ /version/ && $_ =~ /(\d+)\.(\d+)\.(\d+)/ )
-            {
-                if( $1.'.'.$2 < $v[ 0 ].'.'.$v[ 1 ] )
-                {
-                    die qq[\nERROR: $binary version $version is required - your version is $1.$2.$3\n];
-                }
-            }
-        }
-        close( $bfh );
-    }
-}

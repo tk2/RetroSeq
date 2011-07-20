@@ -83,11 +83,14 @@ sub getCandidateBreakPointsDepth
     my $chr = shift;
     my $start = shift;
     my $end = shift;
-    my $bam = shift;
+	my @bams = @{ $_[ 0 ] };shift;
     my $ref = shift;
     my $dfh = shift; #handle to output stream for logging calls that fall out
+
+	my $bamStr = '';
+	foreach my $bam( @bams ){$bamStr.=qq[ $bam];}
     
-    open( my $tfh, qq[samtools mpileup -r $chr:$start-$end -f $ref -u $bam | bcftools view - | ] ) or die $!;
+    open( my $tfh, qq[samtools mpileup -r $chr:$start-$end -f $ref -u $bamStr | bcftools view - | ] ) or die $!;
 	my %depths;
 	while( <$tfh> )
 	{
@@ -147,7 +150,7 @@ sub testBreakPoint
     my $chr = shift;
     my $refPos = shift;
     die qq[Non integer value passed as refPos] unless defined( $refPos ) && $refPos =~ /^\d+$/;
-    my $bam = shift;
+	my @bams = @{ $_[ 0 ] };shift;
     my $minMapQ = shift;
     my $originalCall = shift;
     my $dfh = shift; #file handle to print out info on failed calls
@@ -160,8 +163,21 @@ sub testBreakPoint
     #store the last blue read before the b/point, and first blue read after the b/point
 	my $lastBluePos = 0;my $firstBluePos = 100000000000;
 	
+	my $cmdpre;
+    if( @bams > 1 )
+    {
+        if( _mergeRegionBAMs( \@bams, $chr, $refPos-$BREAKPOINT_WINDOW - 500, $refPos+$BREAKPOINT_WINDOW + 500, qq[/tmp/$$.region.bam] ) )
+        {
+            $cmdpre = qq[samtools view /tmp/$$.region.bam $chr:];
+        }else{die qq[Failed to extract region $chr:$refPos BAM];}
+    }
+    else
+    {
+        $cmdpre = qq[samtools view $bams[0] $chr:];
+    }
+	
 	#also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
-	my $cmd = qq[samtools view $bam $chr:].($refPos-$BREAKPOINT_WINDOW).qq[-].($refPos+$BREAKPOINT_WINDOW).qq[ | ];
+	my $cmd = $cmdpre.($refPos-$BREAKPOINT_WINDOW).qq[-].($refPos+$BREAKPOINT_WINDOW).qq[ | ];
 	open( my $tfh, $cmd ) or die $!;
 	while( my $sam = <$tfh> )
 	{
@@ -356,22 +372,30 @@ sub getCandidateBreakPointsDir
 sub getCandidateBreakPointsDirVote
 {
     die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 5;
- 
+    
     my $chr = shift;
     my $start = shift;
     my $end = shift;
-    my $bam = shift;
+	my @bams = @{ $_[ 0 ] };shift;
     my $minQ = shift;
 
     if( $chr !~ /^\d+$/ || $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
-    if( ! -f $bam ){die qq[ERROR: Cant find bam file: $bam];}
     
     my %fwdCount;
     my %revCount;
     
-    #get the coverage of the forward orientated reads
-    #                   get sam                                 filter out low map Q reads                               mate is unmapped    mate not mapped in proper pair             mapped of fwd strand
-    my $cmd = qq[samtools view $bam $chr:$start-$end |];
+    my $cmd;
+    if( @bams > 1 )
+    {
+        if( _mergeRegionBAMs( \@bams, $chr, $start, $end, qq[/tmp/$$.region.bam] ) )
+        {
+            $cmd = qq[samtools view /tmp/$$.region.bam |];
+        }else{die qq[Failed to extract region $chr:$start-$end BAM];}
+    }
+    else
+    {
+        $cmd = qq[samtools view $bams[0] $chr:$start-$end |];
+    }
     
     open( my $tfh, $cmd ) or die $!;
     my $fwdCurrentPos = $start;
@@ -577,18 +601,21 @@ sub annotateCallsBED
 
 sub getBAMSampleName
 {
-    my $bam = shift;
+    my @bams = @{ $_[ 0 ] };
     
     my %samples;
-    open( my $bfh, qq[samtools view -H $bam |] );
-    while( my $line = <$bfh> )
+    foreach my $bam ( @bams )
     {
-        chomp( $line );
-        next unless $line =~ /^\@RG/;
-        my @s = split(/\t/, $line );
-        foreach my $tag (@s)
+        open( my $bfh, qq[samtools view -H $bam |] );
+        while( my $line = <$bfh> )
         {
-            if( $tag && $tag =~ /^(SM):(\w+)/ && ! $samples{ $2 } ){$samples{ $2 } = 1;}
+            chomp( $line );
+            next unless $line =~ /^\@RG/;
+            my @s = split(/\t/, $line );
+            foreach my $tag (@s)
+            {
+                if( $tag && $tag =~ /^(SM):(\w+)/ && ! $samples{ $2 } ){$samples{ $2 } = 1;}
+            }
         }
     }
     
@@ -605,6 +632,72 @@ sub getBAMSampleName
     }
     
     return $sampleName; 
+}
+
+sub _mergeRegionBAMs
+{
+    my @bams = @{ $_[ 0 ] };shift;
+    my $chr = shift;
+    my $start = shift;
+    my $end = shift;
+    my $output = shift;
+    
+    if( @bams > 1 )
+    {
+        my $bamStr = '';
+        foreach my $bam( @bams ){$bamStr.=qq[ $bam];}
+        
+        #buffer the regions from the bams and then merge into a single bam
+        my $str = '';
+        for(my $i=0;$i<@bams;$i++)
+        {
+            system( qq[samtools view -b -h $bams[$i] $chr:$start-$end > /tmp/$$.$i.region.bam] ) == 0 or die qq[Failed to get region $chr:$start-$end for $bams[$i]\n];
+            $str .= qq[ /tmp/$$.$i.region.bam];
+        }
+        system( qq[samtools merge -f $output $str;samtools index $output] ) == 0 or die qq[Failed to merge region BAMs for region $chr:$start-$end : $str\n];
+    }
+    else
+    {
+        system( qq[samtools view $bams[0] $chr:$start-$end > $output] ) == 0 or die qq[Failed to extract region $chr:$start-$end BAM: $bams[0]\n];
+    }
+    
+    return 1;
+}
+
+sub checkBinary
+{
+    my $binary = shift;
+    my $version = undef;
+    if( @_ == 1 )
+    {
+        $version = shift;
+    }
+    
+    if( ! `which $binary` )
+    {
+        croak qq[Error: Cant find required binary $binary\n];
+    }
+    
+    if( $version )
+    {
+        my @v = split( /\./, $version );
+        my $hasOutput = 0;
+        open( my $bfh, qq[ $binary 2>&1 | ] ) or die "failed to run $binary\n";
+        while(<$bfh>)
+        {
+            chomp;
+            if( lc($_) =~ /version/ && $_ =~ /(\d+)\.(\d+)\.(\d+)/ )
+            {
+                if( $1.'.'.$2 < $v[ 0 ].'.'.$v[ 1 ] )
+                {
+                    die qq[\nERROR: $binary version $version is required - your version is $1.$2.$3\n];
+                }
+                $hasOutput = 1;
+            }
+        }
+        close( $bfh );
+        die qq[ERROR: Cant determine version number of $binary\n] unless $hasOutput;
+    }
 }
 
 1;
