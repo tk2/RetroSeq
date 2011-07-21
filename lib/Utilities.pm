@@ -231,39 +231,19 @@ sub testBreakPoint
 
 sub genotypeRegion
 {
-    croak qq[Incorrect number of arguments: ].scalar(@_) unless @_ == 7;
+    croak qq[Incorrect number of arguments: ].scalar(@_) unless @_ == 6;
     
     my $chr = shift;
-    my $start = shift;
-    my $end = shift;
+    my $position = shift;
     my $bam = shift;
-    my $minDepth = shift;
     my $minMapQ = shift;
-    my $ref = shift;
+    my $minReads = shift;
     
     die qq[cant find bam: $bam\n] unless -f $bam;
     
-    #check the min depth in the region is < minDepth
-    my $regStart = $start - 200; my $regEnd = $end + 200;
-    open( my $tfh, qq[samtools mpileup -f $ref -r $chr:$regStart-$regEnd $bam | tail -300 | head -200 | ] ) or die $!;
-    my $minDepth_ = 100; my $minDepthPos = -1;
-    while( <$tfh> )
-    {
-        chomp;my @s = split( /\t/, $_ );
-	    my $d = ($s[8]=~tr/,\./x/); #count the depth of the bases that match the reference (i.e. sometimes at the breakpoint there are snps causing false depth)
-	    if( $s[ 2 ] eq $s[ 3 ] && $d < $minDepth_ )
-	    {
-	        $minDepth_ = $d;$minDepthPos = $s[ 1 ];
-	    }
-	    elsif($s[ 7 ] < $minDepth_ ){$minDepth_ = $s[ 7 ];$minDepthPos = $s[ 1 ];}
-    }
-    close( $tfh );
-    
-    if( $minDepth_ > $minDepth ){return undef;} #no call - depth to high
-    
     #also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
-    my $cmd = qq[samtools view $bam $chr:].($minDepthPos-300).qq[-].($minDepthPos+300).qq[ | ];
-	open( $tfh, $cmd ) or die $!;
+    my $cmd = qq[samtools view $bam $chr:].($position-$BREAKPOINT_WINDOW).qq[-].($position+$BREAKPOINT_WINDOW).qq[ | ];
+	open( my $tfh, $cmd ) or die $!;
 	my $lhsRev = 0; my $rhsRev = 0; my $lhsFwd = 0; my $rhsFwd = 0;
 	while( <$tfh> )
 	{
@@ -272,20 +252,19 @@ sub genotypeRegion
 	    next unless $s[ 4 ] > $minMapQ;
 	    if( !( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && ( $s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} || $s[ 2 ] ne $s[ 6 ] ) )
 	    {
-	        #print qq[candidate: $s[1]\n];
 	        if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
 	        {
-	            if( $s[ 3 ] < $minDepthPos ){$lhsRev++;}else{$rhsRev++;}
+	            if( $s[ 3 ] < $position ){$lhsRev++;}else{$rhsRev++;}
 	        }
 	        else
 	        {
-	            if( $s[ 3 ] < $minDepthPos ){$lhsFwd++;}else{$rhsFwd++;}
+	            if( $s[ 3 ] < $position ){$lhsFwd++;}else{$rhsFwd++;}
 	        }
 	    }
 	 }
 	 
 	 #N.B. Key difference is that only 1 side is required to have the correct ratio of fw:rev reads
-	 if( $lhsFwd > 5 && $rhsRev > 5 && ( ( $lhsRev == 0 || $lhsFwd / $lhsRev > 2 ) || ( $rhsFwd == 0 || $rhsRev / $rhsFwd > 2 ) ) )
+	 if( $lhsFwd > $minReads && $rhsRev > $minReads && ( ( $lhsRev == 0 || $lhsFwd / $lhsRev > 2 ) || ( $rhsFwd == 0 || $rhsRev / $rhsFwd > 2 ) ) )
 	 {
 	     return ($lhsFwd+$rhsRev);
 	 }
@@ -323,14 +302,14 @@ sub getCandidateBreakPointsDir
         $cmd = qq[samtools mpileup -A /tmp/$$.fwd.bam | sort -k4,4n | tail -1 | ].q[awk -F"\t" '{print $2}' | ];
         open( my $tfh, $cmd ) or warn $!;
         $fwdpos = <$tfh>;
-        if( ! defined( $fwdpos ) ){warn qq[WARNING: Failed to get the fwdpos for het call: $chr:$start-$end];return undef;}
+        if( ! defined( $fwdpos ) ){warn qq[WARNING: Failed to get the fwdpos for het call: $chr:$start-$end];unlink(qq[/tmp/$$.region.bam]);return undef;}
         chomp( $fwdpos );
     }
-    else{warn qq[Failed to run samtools over region to generate fwd reads bam: $cmd\n];return undef;}
+    else{warn qq[Failed to run samtools over region to generate fwd reads bam: $cmd\n];unlink(qq[/tmp/$$.region.bam]);return undef;}
     
     unlink( qq[/tmp/$$.fwd.bam] ) > 0 or warn qq[WARNING: Failed to delete /tmp/$$.fwd.bam files];
     
-    if( !$fwdpos || $fwdpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate fwd heterozygous breakpoints for $chr:$start-$end\n];return undef;}
+    if( !$fwdpos || $fwdpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate fwd heterozygous breakpoints for $chr:$start-$end\n];unlink(qq[/tmp/$$.region.bam]);return undef;}
     
     #get the coverage of the reverse orientated reads
     #                   get sam                                 filter out low map Q reads                               mate is unmapped    mate not mapped in proper pair             mapped of rev strand
@@ -341,14 +320,14 @@ sub getCandidateBreakPointsDir
         $cmd = qq[samtools mpileup -A /tmp/$$.rev.bam | sort -k4,4n | tail -1 | ].q[awk -F"\t" '{print $2}' | ];
         open( my $tfh, $cmd ) or warn $!;
         $revpos = <$tfh>;
-        if( ! defined( $revpos ) ){warn qq[WARNING: Failed to get the revpos for het call: $chr:$start-$end];return undef;}
+        if( ! defined( $revpos ) ){warn qq[WARNING: Failed to get the revpos for het call: $chr:$start-$end];unlink(qq[/tmp/$$.region.bam]);return undef;}
         chomp( $revpos );
     }
     else{warn qq[Failed to run samtools over region to generate rev reads bam: $cmd\n];}
     
     unlink( qq[/tmp/$$.rev.bam] ) > 0 or warn qq[WARNING: Failed to delete /tmp/$$.rev.bam files];
     
-    if( !$revpos || $revpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate rev heterozygous breakpoints for $chr:$start-$end\n];return undef;}
+    if( !$revpos || $revpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate rev heterozygous breakpoints for $chr:$start-$end\n];unlink(qq[/tmp/$$.region.bam]);return undef;}
     
     #find the point with the lowest depth between the candidate points
     $cmd = qq[samtools view -h -b /tmp/$$.region.bam -h $chr:].($fwdpos-200).qq[-].($revpos+200).qq[ > /tmp/$$.localised.bam];

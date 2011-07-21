@@ -153,6 +153,7 @@ USAGE
     
     #test for samtools
     Utilities::checkBinary( q[samtools], qq[0.1.16] );
+    Utilities::checkBinary( q[exonerate], qq[2.2.0] );
     
     _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $clean );
 }
@@ -201,41 +202,39 @@ USAGE
     #test for samtools
     Utilities::checkBinary( q[samtools], qq[0.1.16] );
     Utilities::checkBinary( q[bcftools] );
-    Utilities::checkBinary( q[exonerate], qq[2.2.0] );
     
     _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate );
 }
 elsif( $genotype )
 {
-    ( $bams && $input && $eRefFofn && $reads && $noclean && $tmpdir && $output ) or die <<USAGE;
-Usage: $0 -genotype -bams <string> -input <string> -eref <string> -output <string> [-cleanup -reads <int> -chr <string> -tmpdir <string>]
+    ( $bams && $input && $reads && $noclean && $tmpdir && $output ) or die <<USAGE;
+Usage: $0 -genotype -bams <string> -input <string> -eref <string> -output <string> [-cleanup -reads <int> -region <chr:[start-end]>
     
     -bams           File of BAM file names (one per sample to be genotyped)
     -input          VCF file of TE calls
-    -eref           Fasta of TE reference genome
+    -ref            Fasta of TE reference genome
     -output         Output VCF file (will be annotated with new genotype calls)
-    [-cleanup       Remove intermediate output files (yes/no). Default is yes.]
-    [-reads         Minimum number of reads required for a genotype calls. Default is 3.]
-    [-chr           Validate the calls from a single chromosome only. Default is all chromosomes.]
-    [-tmpdir        Root of temporary directory for intermediate files. Default is cwd.]
-    [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30.]
-    [-id            Minmum percent ID for a match of a read to the transposon references. Default is 90.]
-    [-len           Miniumum length of a hit to the transposon references. Default is 36bp.]
-    
+    [-hets          Call heterozygous insertions. Default is homozygous.]
+    [-orientate     Attempt to predicate the orientation of the calls. Default is no.]
+    [-region        Call a particular chromosome only (chr) OR region (chr:start-end) only]
+    [-depth         Max average depth of a region to be considered for calling. Default is 200.]
+    [-reads         It is the minimum number of reads required to make a call. Default is 5. Parameter is optional.]
+    [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
+    [-noclean       Do not remove intermediate output files. Default is to cleanup.]
 USAGE
     
     croak qq[Cant find BAM fofn: $bams] unless -f $bams;
     croak qq[Cant find input: $input] unless -f $input;
-    croak qq[Cant find TE tab file: $eRefFofn] unless -f $eRefFofn;
     
     my $clean = defined( $noclean ) ? 0 : 1;
     $reads = defined( $reads ) && $reads =~ /^\d+$/ ? $reads > -1 : $DEFAULT_MIN_GENOTYPE_READS;
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
-    $id = defined( $id ) && $id < 101 && $id > 0 ? $id : $DEFAULT_ID;
-    $length = defined( $length ) && $length > 25 ? $length : $DEFAULT_LENGTH;
-    $tmpdir = defined( $tmpdir ) && -d $tmpdir ? $tmpdir : getcwd();
     
-    _genotype( $bams, $input, $eRefFofn, $reads, $region, $anchorQ, $id, $length, $tmpdir, $output, $clean );
+    #test for samtools
+    Utilities::checkBinary( q[samtools], qq[0.1.16] );
+    Utilities::checkBinary( q[bcftools] );
+    
+    _genotype( $bams, $input, $ref, $region, $anchorQ, $output, $clean, $heterozygous, $orientate, $reads );
 }
 else
 {
@@ -739,16 +738,19 @@ and look in the region around the VCF of calls to see if there is some
 support for the call in the new sample and output a new VCF with the
 new genotypes called
 =cut
-sub _genotypeCallsMinimaTable
+sub _genotype
 {
+    croak qq[Incorrect number of parameters to _gentoype function: ].scalar(@_) unless @_ == 10;
     my $bam_fofn = shift;
 	my $input = shift;
-    my $chromosome = shift;
-	my $minDepth = shift;
-	my $minMapQ = shift;
 	my $ref = shift;
+    my $region = shift;
+	my $minMapQ = shift;
 	my $output = shift;
 	my $clean = shift;
+	my $hets = shift;
+	my $orientate = shift;
+	my $minReads = shift;
 	
 	#get the list of sample names
     my %sampleBAM;
@@ -789,7 +791,7 @@ sub _genotypeCallsMinimaTable
         
         foreach my $sample ( sort( keys( %sampleBAM ) ) )
         {
-            my $quality = Utilities::genotypeRegion($chr_, $start, $end, $sampleBAM{ $sample }, $minDepth, $minMapQ, $ref );
+            my $quality = Utilities::genotypeRegion($chr_, $start, $end, $sampleBAM{ $sample }, $minMapQ, $minReads );
             if( $call )
 	        {
 	            $$entry{gtypes}{$sample}{GT} = $gt;
