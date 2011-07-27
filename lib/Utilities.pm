@@ -212,6 +212,8 @@ sub testBreakPoint
 	            }
 	        }
 	        
+	        unlink( qq[/tmp/$$.region.bam] );
+	        
 	        #check there are supporting read pairs either side of the depth minima
 	        my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
 	        my $dist = $firstBluePos - $lastBluePos;
