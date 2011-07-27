@@ -362,7 +362,7 @@ sub getCandidateBreakPointsDirVote
 	my @bams = @{ $_[ 0 ] };shift;
     my $minQ = shift;
 
-    if( $chr !~ /^\d+$/ || $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
+    if( $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
     
     my %fwdCount;
     my %revCount;
