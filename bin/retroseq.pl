@@ -61,7 +61,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $help);
 
 GetOptions
 (
@@ -89,6 +89,7 @@ GetOptions
     'hets'          =>  \$heterozygous,
     'filter=s'      =>  \$filterFile,
     'orientate=s'   =>  \$orientate,
+    'ignoreRGs=s'     =>  \$ignoreRGsFofn,
     'h|help'        =>  \$help,
 );
 
@@ -173,6 +174,7 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-f
     [-depth         Max average depth of a region to be considered for calling. Default is 200.]
     [-reads         It is the minimum number of reads required to make a call. Default is 5. Parameter is optional.]
     [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
+    [-ignoreRGs     Single read group name OR a file of readgroups that should be ignored. Default is none.]
     [-noclean       Do not remove intermediate output files. Default is to cleanup.]
     
 USAGE
@@ -203,7 +205,7 @@ USAGE
     Utilities::checkBinary( q[samtools], qq[0.1.16] );
     Utilities::checkBinary( q[bcftools] );
     
-    _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate );
+    _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn );
 }
 elsif( $genotype )
 {
@@ -349,9 +351,10 @@ sub _findCandidates
     }
     
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
-    system( qq[exonerate --bestn 5 --percent ].($id-10).q[ --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" > $$.exonerate.out ] ) == 0 or die qq[Exonerate exited incorrectly\n];
+    #system( qq[exonerate --bestn 5 --percent ].($id-10).q[ --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" > $$.exonerate.out ] ) == 0 or die qq[Exonerate exited incorrectly\n];
     
-    open( my $efh, qq[$$.exonerate.out] ) or die qq[Failed to read exonerate alignment files: $!\n];
+    #open( my $efh, qq[$$.exonerate.out] ) or die qq[Failed to read exonerate alignment files: $!\n];
+    open( my $efh, qq[exonerate --bestn 5 --percent ].($id-10).q[ --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die qq[Exonerate failed to run: $!];
     print qq[Parsing alignments....\n];
     my $lastLine;
     my %anchors;
@@ -372,6 +375,8 @@ sub _findCandidates
     close( $efh );
     
     if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[Alignment did not complete correctly\n];}
+    
+    #unlink( qq[$$.exonerate.out] );
     
     #setup filehandles for the various TE types
     my %TE_fh;
@@ -440,8 +445,7 @@ sub _findInsertions
     my $filterBED  = shift;
     my $hets = shift;
     my $orientate = shift;
-    
-    Utilities::checkBinary( 'sort' ); #sort cmd required
+    my $ignoreRGs = shift;
     
     my @files;
     if( -f $input )
@@ -491,6 +495,25 @@ sub _findInsertions
         #check the eof markers are there from the discovery stage
         _checkDiscoveryOutput( $input );
         $input_ = $input;
+    }
+    
+    my $ignoreRGsFormatted = undef;
+    if( $ignoreRGs )
+    {
+        $ignoreRGsFormatted = qq[$$.ignore.rgs];
+        open( my $tfh, qq[>$ignoreRGsFormatted] ) or die qq[Failed to create tmp file: $ignoreRGsFormatted\n];
+        if( -f $ignoreRGs )
+        {
+            open( my $ifh, $ignoreRGs )  or die qq[Failed to open readgroups file: $ignoreRGs $!\n];
+            while( my $rg = <$ifh> ){chomp( $rg );print $tfh qq[RG:Z:$rg\t\n];print qq[Ignoring RG: $rg\n];}
+        }
+        else
+        {
+            print $tfh qq[RG:$ignoreRGs\t\n];
+            print qq[Ignoring RG: $ignoreRGs\n];
+        }
+        print qq[\n];
+        close( $tfh );
     }
     
     my $sampleName = Utilities::getBAMSampleName( \@bams );
@@ -577,7 +600,7 @@ sub _findInsertions
                 $typeBEDFiles{ $currentType }{hom} = qq[$$.raw_calls.3.$count.hom.bed]; #homozygous calls
                 $typeBEDFiles{ $currentType }{het} = undef; #het calls
                 if( $hets ){$typeBEDFiles{ $currentType }{het} = qq[$$.raw_calls.3.$count.het.bed];}
-                _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $typeBEDFiles{ $currentType }{hom}, $typeBEDFiles{ $currentType }{het} );
+                _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $typeBEDFiles{ $currentType }{hom}, $typeBEDFiles{ $currentType }{het}, $ignoreRGsFormatted );
                 $count ++;
         }
         else
@@ -622,7 +645,7 @@ reads either side
 =cut
 sub _filterCallsBedMinima
 {
-    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 9;
+    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 10;
     
     my $bedin = shift;
 	my @bams = @{ $_[ 0 ] };shift;
@@ -633,6 +656,7 @@ sub _filterCallsBedMinima
 	my $hets = shift;
 	my $bedoutHoms = shift;
 	my $bedoutHets = shift;
+	my $ignoreRGsFormatted = shift;
 	
 	open( my $ifh, $bedin ) or die $!;
 	open( my $homsfh, qq[>$bedoutHoms] ) or die $!;
@@ -685,7 +709,7 @@ sub _filterCallsBedMinima
 	        
 	        last unless $depth <= $minDepth;
 	        
-	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, \@bams, $minMapQ, $originalCall, $dfh );
+	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted );
 	        
 	        if( $result && $result->[0] < $minRatio )
 	        {
@@ -710,7 +734,7 @@ sub _filterCallsBedMinima
 	        {
 	            last if( ! defined $candPos );
 	            print qq[Testing het breakpoint: $candPos\n];
-	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, \@bams, $minMapQ, $originalCall, $dfh );
+	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted );
 	            if( $result )
 	            {
 	                $minRatio = $result->[0];

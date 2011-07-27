@@ -145,7 +145,7 @@ sub _local_min_max
 
 sub testBreakPoint
 {
-    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 6;
+    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 7;
     
     my $chr = shift;
     my $refPos = shift;
@@ -154,6 +154,8 @@ sub testBreakPoint
     my $minMapQ = shift;
     my $originalCall = shift;
     my $dfh = shift; #file handle to print out info on failed calls
+    my $ignoreRGs = shift; #file of lines with "RG:tag\t"
+    
     my @originalCallA = split( /\t/, $originalCall );
     
     #test to see if lots of rp's either side
@@ -175,9 +177,9 @@ sub testBreakPoint
     {
         $cmdpre = qq[samtools view $bams[0] $chr:];
     }
-	
+
 	#also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
-	my $cmd = $cmdpre.($refPos-$BREAKPOINT_WINDOW).qq[-].($refPos+$BREAKPOINT_WINDOW).qq[ | ];
+	my $cmd = $cmdpre.($refPos-$BREAKPOINT_WINDOW).qq[-].($refPos+$BREAKPOINT_WINDOW).qq[ | ].(defined($ignoreRGs) ? qq[ grep -v -f $ignoreRGs |] : qq[]);
 	open( my $tfh, $cmd ) or die $!;
 	while( my $sam = <$tfh> )
 	{
@@ -274,14 +276,14 @@ sub genotypeRegion
 sub getCandidateBreakPointsDir
 {
     die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 5;
- 
+    
     my $chr = shift;
     my $start = shift;
     my $end = shift;
     my $bam = shift;
     my $minQ = shift;
     
-    if( $chr !~ /^\d+$/ || $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
+    if( $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
     if( ! -f $bam ){die qq[ERROR: Cant find bam file: $bam];}
     
     #get the reads over the region into a bam on local /tmp first
