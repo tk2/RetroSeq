@@ -634,10 +634,12 @@ sub _mergeRegionBAMs
         my $str = '';
         for(my $i=0;$i<@bams;$i++)
         {
-            system( qq[samtools view -b -h $bams[$i] $chr:$start-$end > /tmp/$$.$i.region.bam] ) == 0 or die qq[Failed to get region $chr:$start-$end for $bams[$i]\n];
-            $str .= qq[ /tmp/$$.$i.region.bam];
+            my $ind_bam = qq[/tmp/$$.$i.ind_region.bam];
+            system( qq[samtools view -b -h $bams[$i] $chr:$start-$end > $ind_bam] ) == 0 or die qq[Failed to get region $chr:$start-$end for $bams[$i] $ind_bam\n];
+            $str .= qq[ $ind_bam];
         }
         system( qq[samtools merge -f $output $str;samtools index $output] ) == 0 or die qq[Failed to merge region BAMs for region $chr:$start-$end : $str\n];
+        unlink( glob( qq[/tmp/$$.*.ind_region.bam] ) );
     }
     else
     {
