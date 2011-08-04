@@ -11,11 +11,6 @@ Should work and compile
 Test: validation and genotyping steps
 
 Issues/improvements:
-The BAM could be required to be sorted by readname before input
-    - this would mean that you could get the candidate reads from a single pass through
-    - drawback is that for further stages you need the BAM sorted by coordinate
-    - for big projects, it would be extra effort to pre-sort by name
-Calling of heterozygotes is not handled right now
 Genotyping
     - test it
     - should dump out genotype likelihoods also
@@ -117,7 +112,7 @@ USAGE
 if( $discover )
 {
     ( $bam && $eRefFofn && $output ) or die <<USAGE;
-Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-id <int>] [-len <int> -clean <yes/no>]
+Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-id <int>] [-len <int> -noclean]
     
     -bam        BAM file of paired reads mapped to reference genome
     -eref       Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta)
@@ -466,7 +461,7 @@ sub _findInsertions
     else
     {
         @files = glob( qq[$input*] );
-        die qq[Cant find any inputs files with prefix $input*\n];
+        die qq[Cant find any inputs files with prefix $input*\n] if( ! @files || @files == 0 );
     }
     
     my @bams;
