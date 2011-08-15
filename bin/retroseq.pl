@@ -346,9 +346,6 @@ sub _findCandidates
     }
     
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
-    #system( qq[exonerate --bestn 5 --percent ].($id-10).q[ --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" > $$.exonerate.out ] ) == 0 or die qq[Exonerate exited incorrectly\n];
-    
-    #open( my $efh, qq[$$.exonerate.out] ) or die qq[Failed to read exonerate alignment files: $!\n];
     open( my $efh, qq[exonerate --bestn 5 --percent ].($id-10).q[ --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die qq[Exonerate failed to run: $!];
     print qq[Parsing alignments....\n];
     my $lastLine;
@@ -460,7 +457,7 @@ sub _findInsertions
     }
     else
     {
-        @files = glob( qq[$input*] );
+        @files = glob( qq[$input*] ) or die qq[Failed to glob files: $input*\n];
         die qq[Cant find any inputs files with prefix $input*\n] if( ! @files || @files == 0 );
     }
     
@@ -592,10 +589,20 @@ sub _findInsertions
                 
                 #new calling filtering code
                 print qq[Filtering and refining candidate regions into calls....\n];
-                $typeBEDFiles{ $currentType }{hom} = qq[$$.raw_calls.3.$count.hom.bed]; #homozygous calls
-                $typeBEDFiles{ $currentType }{het} = undef; #het calls
-                if( $hets ){$typeBEDFiles{ $currentType }{het} = qq[$$.raw_calls.3.$count.het.bed];}
-                _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $typeBEDFiles{ $currentType }{hom}, $typeBEDFiles{ $currentType }{het}, $ignoreRGsFormatted );
+                my $homCalls = qq[$$.raw_calls.3.$count.hom.bed];
+                my $hetCalls = qq[$$.raw_calls.3.$count.het.bed];
+                _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted );
+                
+                $typeBEDFiles{ $currentType }{hom} = $homCalls if( -f $homCalls && -s $homCalls > 0 );
+                if( $hets && -f $hetCalls && -s $hetCalls > 0 ){$typeBEDFiles{ $currentType }{het} = $hetCalls;}
+                
+                #remove the temporary files for this 
+                if( $clean )
+                {
+                    unlink( qq[$$.raw_reads.0.$count.tab], qq[$$.raw_calls.1.$count.tab], qq[$$.raw_calls.2.$count.tab] ) or die qq[Failed to delete temp files\n];
+                    unlink( $homCalls ) if( -f $homCalls && -s $homCalls == 0 );
+                    unlink( $hetCalls ) if ( -f $hetCalls && -s $hetCalls == 0 );
+                }
                 $count ++;
         }
         else
@@ -1243,6 +1250,9 @@ sub _mergeDiscoveryOutputs
         }
         close( $ifh );
         print $ofh qq[TE_TYPE_END\n];
+        
+        #delete all of the intermediate files
+        unlink( $typeFile{ $type } ) or die qq[Failed to delete intermediate file\n];
     }
     print $ofh $FOOTER.qq[\n];
     close( $ofh );
