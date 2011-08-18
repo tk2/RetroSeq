@@ -34,7 +34,7 @@ my $DEFAULT_ID = 90;
 my $DEFAULT_LENGTH = 36;
 my $DEFAULT_ANCHORQ = 20;
 my $DEFAULT_MAX_DEPTH = 200;
-my $DEFAULT_READS = 5;
+my $DEFAULT_READS = 10;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 50;
 
@@ -107,7 +107,7 @@ NOTE: $0 requires samtools, bcftools, exonerate, unix sort to be in the default 
 
 USAGE
 
-( $discover || $call || $help) or die $USAGE;
+( $discover || $call || $genotype || $help) or die $USAGE;
 
 if( $discover )
 {
@@ -119,8 +119,8 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-i
     -output     Output file to store candidate supporting reads (required for calling step)
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
     [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
-    [-id        Minmum percent ID for a match of a read to the transposon references. Default is 90.]
-    [-len       Miniumum length of a hit to the transposon references. Default is 36bp.]
+    [-id        Minimum percent ID for a match of a read to the transposon references. Default is 90.]
+    [-len       Minimum length of a hit to the transposon references. Default is 36bp.]
     [-rgs       Comma separated list of readgroups to operate on. Default is all.]
     
 USAGE
@@ -187,6 +187,7 @@ USAGE
     croak qq[Cant find reference genome fasta: $ref] unless -f $ref;
     croak qq[Cant find reference genome index - please index your reference file with samtools faidx] unless -f qq[$ref.fai];
     
+    if( $reads ){die qq[Invalid reads parameter: $reads] unless ( $reads =~ /^\d+$/ && $reads > -1 ); print qq[Min reads: $reads\n];}else{$reads = $DEFAULT_READS;}
     $reads = defined( $reads ) && $reads =~ /^\d+$/ && $reads > -1 ? $reads : $DEFAULT_READS;
     $depth = defined( $depth ) && $depth =~ /^\d+$/ && $depth > -1 ? $depth : $DEFAULT_MAX_DEPTH;
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
@@ -204,24 +205,27 @@ USAGE
 }
 elsif( $genotype )
 {
-    ( $bams && $input && $reads && $noclean && $tmpdir && $output ) or die <<USAGE;
-Usage: $0 -genotype -bams <string> -input <string> -eref <string> -output <string> [-cleanup -reads <int> -region <chr:[start-end]>
+    ( $ref && $bams && $input && $output ) or die <<USAGE;
+Usage: $0 -genotype -bams <string> -input <string> -ref <string> -output <string> [-cleanup -reads <int> -region <chr:[start-end]>
     
     -bams           File of BAM file names (one per sample to be genotyped)
     -input          VCF file of TE calls
-    -ref            Fasta of TE reference genome
+    -ref            Fasta of reference genome
     -output         Output VCF file (will be annotated with new genotype calls)
     [-hets          Call heterozygous insertions. Default is homozygous.]
-    [-orientate     Attempt to predicate the orientation of the calls. Default is no.]
+    [-orientate     Attempt to predict the orientation of the calls. Default is no.]
     [-region        Call a particular chromosome only (chr) OR region (chr:start-end) only]
     [-depth         Max average depth of a region to be considered for calling. Default is 200.]
-    [-reads         It is the minimum number of reads required to make a call. Default is 5. Parameter is optional.]
+    [-reads         It is the minimum number of reads required to make a call. Default is $DEFAULT_MIN_GENOTYPE_READS. Parameter is optional.]
     [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
     [-noclean       Do not remove intermediate output files. Default is to cleanup.]
 USAGE
     
     croak qq[Cant find BAM fofn: $bams] unless -f $bams;
     croak qq[Cant find input: $input] unless -f $input;
+    
+    croak qq[Cant find reference genome fasta: $ref] unless -f $ref;
+    croak qq[Cant find reference genome index - please index your reference file with samtools faidx] unless -f qq[$ref.fai];
     
     my $clean = defined( $noclean ) ? 0 : 1;
     $reads = defined( $reads ) && $reads =~ /^\d+$/ ? $reads > -1 : $DEFAULT_MIN_GENOTYPE_READS;
@@ -477,14 +481,23 @@ sub _findInsertions
     else{if( -f $bam && -f $bam.qq[.bai] ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
     
     my $input_;
-    if( @files && @files > 1 )
+    if( @files && @files > 0 )
     {
-        $input_ = qq[$$.merged.discovery];
-        _mergeDiscoveryOutputs( \@files, $input_ );
+        if( @files == 1 )  #single input file in the fofn
+        {
+            $input_ = $files[ 0 ];
+            _checkDiscoveryOutput( $input_ );
+        }
+        else #multiple input files so merge
+        {
+            $input_ = qq[$$.merged.discovery];
+            _mergeDiscoveryOutputs( \@files, $input_ );
+        }
     }
     else
     {
         #check the eof markers are there from the discovery stage
+        print qq[Found 1 input file: $input\n];
         _checkDiscoveryOutput( $input );
         $input_ = $input;
     }
@@ -518,7 +531,7 @@ sub _findInsertions
         if( $region =~ /^([A-Za-z0-9]+):([0-9]+)-([0-9]+)$/ )
         {
             $chr = $1;$start=$2;$end=$3;
-            print qq[Restricting caling to region: $region\n];
+            print qq[Restricting calling to region: $region\n];
         }
         else{$chr = $region;print qq[Restricting calling to Chr: $chr\n];}
     }
@@ -591,7 +604,7 @@ sub _findInsertions
                 print qq[Filtering and refining candidate regions into calls....\n];
                 my $homCalls = qq[$$.raw_calls.3.$count.hom.bed];
                 my $hetCalls = qq[$$.raw_calls.3.$count.het.bed];
-                _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted );
+                _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
                 
                 $typeBEDFiles{ $currentType }{hom} = $homCalls if( -f $homCalls && -s $homCalls > 0 );
                 if( $hets && -f $hetCalls && -s $hetCalls > 0 ){$typeBEDFiles{ $currentType }{het} = $hetCalls;}
@@ -647,7 +660,7 @@ reads either side
 =cut
 sub _filterCallsBedMinima
 {
-    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 10;
+    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 11;
     
     my $bedin = shift;
 	my @bams = @{ $_[ 0 ] };shift;
@@ -659,6 +672,7 @@ sub _filterCallsBedMinima
 	my $bedoutHoms = shift;
 	my $bedoutHets = shift;
 	my $ignoreRGsFormatted = shift;
+	my $minReads = shift;
 	
 	open( my $ifh, $bedin ) or die $!;
 	open( my $homsfh, qq[>$bedoutHoms] ) or die $!;
@@ -711,7 +725,7 @@ sub _filterCallsBedMinima
 	        
 	        last unless $depth <= $minDepth;
 	        
-	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted );
+	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads );
 	        
 	        if( $result && $result->[0] < $minRatio )
 	        {
@@ -736,7 +750,7 @@ sub _filterCallsBedMinima
 	        {
 	            last if( ! defined $candPos );
 	            print qq[Testing het breakpoint: $candPos\n];
-	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted );
+	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads );
 	            if( $result )
 	            {
 	                $minRatio = $result->[0];
@@ -793,6 +807,18 @@ sub _genotype
         if( $s ){$sampleBAM{ $s } = $bam;}else{die qq[Failed to determine sample name for BAM: $bam\nCheck SM tag in the read group entries.\n];exit;}
     }close( $tfh );
     
+    #parse the region
+    my ($chr, $start, $end) = (undef, undef, undef);
+    if( defined( $region ) )
+    {
+        if( $region =~ /^([A-Za-z0-9]+):([0-9]+)-([0-9]+)$/ )
+        {
+            $chr = $1;$start=$2;$end=$3;
+            print qq[Restricting genotyping to region: $region\n];
+        }
+        else{$chr = $region;print qq[Restricting genotyping to Chr: $chr\n];}
+    }
+    
     my $vcf = Vcf->new(file=>$input);
     $vcf->parse_header();
     my $vcf_out = Vcf->new();
@@ -801,15 +827,28 @@ sub _genotype
 	{
 	    $vcf_out->add_columns( $sample );
 	}
-	_writeVcfHeader( $vcf_out, $out );
+	my $header = _getVcfHeader( $vcf_out );
+	print $out qq[>$header];
 	
     while( my $entry = $vcf->next_data_hash() )
     {
         my $chr_ = $$entry{CHROM};
-        my @ci = split( /,/, $$entry{INFO}{CIPOS} );
         my $pos = $$entry{POS};
-        my $start = ($$entry{POS} + $ci[ 0 ]) > 1 ? $$entry{POS} + $ci[ 0 ] : 1;
-        my $end = $$entry{POS} + $ci[ 1 ];
+        
+        if( defined( $chr ) )
+        {
+            if( $chr_ ne $chr )
+            {
+                next;
+            }
+            elsif( defined( $start ) && defined( $end ) )
+            {
+                if( $pos < $start ){next;}
+                elsif( $pos > $end ){last;}
+            }
+        }
+        
+        print qq[Genotyping call: $chr_\t$pos\n];
         
         #get the existing GT call
         my @samples = keys( %{$$entry{gtypes}});
@@ -817,8 +856,8 @@ sub _genotype
         
         foreach my $sample ( sort( keys( %sampleBAM ) ) )
         {
-            my $quality = Utilities::genotypeRegion($chr_, $start, $end, $sampleBAM{ $sample }, $minMapQ, $minReads );
-            if( $call )
+            my $quality = Utilities::genotypeRegion($chr_, $pos, $sampleBAM{ $sample }, $minMapQ, $minReads );
+            if( $quality )
 	        {
 	            $$entry{gtypes}{$sample}{GT} = $gt;
                 $$entry{gtypes}{$sample}{GQ} = $quality;
@@ -829,8 +868,8 @@ sub _genotype
                 $$entry{gtypes}{$sample}{GQ} = '.';
 	        }
         }
-        $vcf->format_genotype_strings($$entry);
-        print $out $vcf_out->format_line($$entry);
+        $vcf->format_genotype_strings($entry);
+        print $out $vcf_out->format_line($entry);
     }
     $vcf->close();
 	close( $out );
@@ -915,7 +954,7 @@ sub _checkDiscoveryOutput
     
     open( my $tfh, $file ) or die $!;
     my $line = <$tfh>;chomp( $line );
-    if( $line !~ /^$HEADER/ ){die qq[Malformed header of input file: $file\n];}
+    if( $line !~ /^$HEADER/ ){die qq[Malformed header of input file: $file\n$line\n$HEADER\n];}
     my $lastLine;
     while(<$tfh>){chomp;$lastLine=$_;}
     close( $tfh );
@@ -939,7 +978,7 @@ sub _outputCalls
     
     my $header = _getVcfHeader($vcf_out);
     print $vfh $header;
-   
+    
     open( my $bfh, qq[>$output.bed] ) or die $!; 
     foreach my $type ( keys( %typeBedFiles ) )
     {
