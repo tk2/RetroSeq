@@ -539,9 +539,9 @@ sub _findInsertions
     #for each type in the file - call the insertions
     open( my $ifh, $input_ ) or die $!;
     my $currentType = '';
-    my $tempUnsorted = qq[$$.reads.0.tab]; #a temporary file to dump out the reads for this TE type
-    my %typeBEDFiles;
     my $count = 0;
+    my $tempUnsorted = qq[$$.reads.0.$count.tab]; #a temporary file to dump out the reads for this TE type
+    my %typeBEDFiles;
     my $tfh;
     my $raw_candidates = qq[$output.candidates];
     open( my $dfh, qq[>$raw_candidates] ) or die $!;
@@ -558,65 +558,66 @@ sub _findInsertions
         if( $line =~ /^(TE_TYPE_START)(\s+)(.+)$/ )
         {
             $currentType = $3;
+            $tempUnsorted = qq[$$.reads.0.$count.tab];
             open( $tfh, qq[>$tempUnsorted] ) or die $!;
         }
         elsif( $line =~ /^TE_TYPE_END/ )
         {
             close( $tfh );
-                print qq[Calling TE type: $currentType\n];
-                if( defined( $chr ) )
+            print qq[Calling TE type: $currentType $count\n];
+            if( defined( $chr ) )
+            {
+                if( defined( $start ) && defined( $end ) )
                 {
-                    if( defined( $start ) && defined( $end ) )
-                    {
-                        #filter the BED file by the chromosome only
-                        _filterBED( $tempUnsorted, $chr, $start, $end );
-                    }
-                    else
-                    {
-                        #filter the BED file by the chromosome only
-                        _filterBED( $tempUnsorted, $chr );
-                    }
+                    #filter the BED file by the chromosome only
+                    _filterBED( $tempUnsorted, $chr, $start, $end );
                 }
-                
-                #call the insertions
-                $sortedCandidatesBED{$currentType} = qq[$$.raw_reads.0.$count.tab];
-                _sortBED( $tempUnsorted, $sortedCandidatesBED{$currentType} );
-                
-                #convert to a region BED (removing any candidates with very low numbers of reads)
-                print qq[Calling initial rough boundaries of insertions....\n];
-                my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
-                Utilities::convertToRegionBED( $sortedCandidatesBED{$currentType}, $minReads, $sampleName, $MAX_READ_GAP_IN_REGION, $rawTECalls1 );
-                
-                if( defined( $filterBED ) )
+                else
                 {
-                    #remove the regions specified in the exclusion BED file
-                    my $filtered = qq[$$.raw_calls.1.filtered.$count.tab];
-                    Utilities::filterOutRegions( $rawTECalls1, $filterBED, $filtered );
-                    $rawTECalls1 = $filtered;
+                    #filter the BED file by the chromosome only
+                    _filterBED( $tempUnsorted, $chr );
                 }
-                
-                #remove extreme depth calls
-                print qq[Removing calls with extremely high depth (>$depth)....\n];
-                my $rawTECalls2 = qq[$$.raw_calls.2.$count.tab];
-                _removeExtremeDepthCalls( $rawTECalls1, \@bams, $depth, $rawTECalls2, $raw_candidates );
-                
-                #new calling filtering code
-                print qq[Filtering and refining candidate regions into calls....\n];
-                my $homCalls = qq[$$.raw_calls.3.$count.hom.bed];
-                my $hetCalls = qq[$$.raw_calls.3.$count.het.bed];
-                _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
-                
-                $typeBEDFiles{ $currentType }{hom} = $homCalls if( -f $homCalls && -s $homCalls > 0 );
-                if( $hets && -f $hetCalls && -s $hetCalls > 0 ){$typeBEDFiles{ $currentType }{het} = $hetCalls;}
-                
-                #remove the temporary files for this 
-                if( $clean )
-                {
-                    unlink( qq[$$.raw_reads.0.$count.tab], qq[$$.raw_calls.1.$count.tab], qq[$$.raw_calls.2.$count.tab] ) or die qq[Failed to delete temp files\n];
-                    unlink( $homCalls ) if( -f $homCalls && -s $homCalls == 0 );
-                    unlink( $hetCalls ) if ( -f $hetCalls && -s $hetCalls == 0 );
-                }
-                $count ++;
+            }
+            
+            #call the insertions
+            $sortedCandidatesBED{$currentType} = qq[$$.raw_reads.0.$count.tab];
+            _sortBED( $tempUnsorted, $sortedCandidatesBED{$currentType} );
+            
+            #convert to a region BED (removing any candidates with very low numbers of reads)
+            print qq[Calling initial rough boundaries of insertions....\n];
+            my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
+            Utilities::convertToRegionBED( $sortedCandidatesBED{$currentType}, $minReads, $sampleName, $MAX_READ_GAP_IN_REGION, $rawTECalls1 );
+            
+            if( defined( $filterBED ) )
+            {
+                #remove the regions specified in the exclusion BED file
+                my $filtered = qq[$$.raw_calls.1.filtered.$count.tab];
+                Utilities::filterOutRegions( $rawTECalls1, $filterBED, $filtered );
+                $rawTECalls1 = $filtered;
+            }
+            
+            #remove extreme depth calls
+            print qq[Removing calls with extremely high depth (>$depth)....\n];
+            my $rawTECalls2 = qq[$$.raw_calls.2.$count.tab];
+            _removeExtremeDepthCalls( $rawTECalls1, \@bams, $depth, $rawTECalls2, $raw_candidates );
+            
+            #new calling filtering code
+            print qq[Filtering and refining candidate regions into calls....\n];
+            my $homCalls = qq[$$.raw_calls.3.$count.hom.bed];
+            my $hetCalls = qq[$$.raw_calls.3.$count.het.bed];
+            _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
+            
+            $typeBEDFiles{ $currentType }{hom} = $homCalls if( -f $homCalls && -s $homCalls > 0 );
+            if( $hets && -f $hetCalls && -s $hetCalls > 0 ){$typeBEDFiles{ $currentType }{het} = $hetCalls;}
+            
+            #remove the temporary files for this 
+            if( $clean )
+            {
+                unlink( $tempUnsorted, qq[$$.raw_reads.0.$count.tab], qq[$$.raw_calls.1.$count.tab], qq[$$.raw_calls.2.$count.tab] ) or die qq[Failed to delete temp files\n];
+                unlink( $homCalls ) if( -f $homCalls && -s $homCalls == 0 );
+                unlink( $hetCalls ) if ( -f $hetCalls && -s $hetCalls == 0 );
+            }
+            $count ++;
         }
         else
         {
@@ -828,7 +829,7 @@ sub _genotype
 	    $vcf_out->add_columns( $sample );
 	}
 	my $header = _getVcfHeader( $vcf_out );
-	print $out qq[>$header];
+	print $out qq[$header];
 	
     while( my $entry = $vcf->next_data_hash() )
     {

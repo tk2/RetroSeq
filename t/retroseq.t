@@ -37,6 +37,7 @@ foreach(@pos){print qq[$_\n];}
 @bams = ('/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18506.raw.bam','/lustre/scratch102/user/tk2/RetroSeq/Human/striped/NA18507.raw.bam');
 
 open( my $dfh, qq[>STDOUT] ) or die $!;
+=pod
 $t = Utilities::testBreakPoint(1,246219988,\@bams,20,qq[1	246219744	246220162	Alu	10],$dfh);
 isa_ok( $t, 'ARRAY' );
 foreach( @{$t} ){print qq[$_\n];}
@@ -95,6 +96,16 @@ foreach( @{$t} ){print qq[$_\n];}
 
 $t = Utilities::testBreakPoint(6,29892876,\@bams,20,qq[20	428029	428070	Alu	10],$dfh);
 isa_ok( $t, 'ARRAY', 'break point test1' );
+foreach( @{$t} ){print qq[$_\n];}
+=cut
+@bams = ('/lustre/scratch102/user/tk2/RetroSeq/Prostate/Bams/G2295.STID0000001783.9.bam');
+$t = Utilities::testBreakPoint('chrY',10566740,\@bams,20,qq[20	428029	428070	Alu	10],$dfh,undef,10);
+isa_ok( $t, 'ARRAY', 'break point test_normal' );
+foreach( @{$t} ){print qq[$_\n];}
+
+@bams = ( '/lustre/scratch102/user/tk2/RetroSeq/Prostate/Bams/G2295.STID0000001783_B.9.bam');
+$t = Utilities::testBreakPoint('chrY',10566740,\@bams,20,qq[20	428029	428070	Alu	10],$dfh,undef,10);
+isa_ok( $t, 'ARRAY', 'break point test_tumour' );
 foreach( @{$t} ){print qq[$_\n];}
 
 close( $dfh );
