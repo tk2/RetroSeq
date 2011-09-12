@@ -682,6 +682,7 @@ sub _filterCallsBedMinima
 	{
 	    open( $hetsfh, qq[>$bedoutHets] ) or die $!;
 	}
+
 	open( my $dfh, qq[>>$thrown_out_file] ) or die $!;
 	while( my $originalCall = <$ifh> )
 	{
@@ -726,7 +727,7 @@ sub _filterCallsBedMinima
 	        
 	        last unless $depth <= $minDepth;
 	        
-	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads );
+	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, 0 );
 	        
 	        if( $result && $result->[0] < $minRatio )
 	        {
@@ -751,7 +752,7 @@ sub _filterCallsBedMinima
 	        {
 	            last if( ! defined $candPos );
 	            print qq[Testing het breakpoint: $candPos\n];
-	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads );
+	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, 0 );
 	            if( $result )
 	            {
 	                $minRatio = $result->[0];
@@ -831,6 +832,8 @@ sub _genotype
 	my $header = _getVcfHeader( $vcf_out );
 	print $out qq[$header];
 	
+	open( my $ofh, qq[>$output.candidates] ) or die $!;
+    print $ofh qq[FILTER: chr\tstart\tend\ttype\_sample\tL_Fwd_both\tL_Rev_both\tL_Fwd_single\tL_Rev_single\tR_Fwd_both\tR_Rev_both\tR_Fwd_single\tR_Rev_single\tL_Last_both\tR_First_both\tDist\n];
     while( my $entry = $vcf->next_data_hash() )
     {
         my $chr_ = $$entry{CHROM};
@@ -854,14 +857,16 @@ sub _genotype
         #get the existing GT call
         my @samples = keys( %{$$entry{gtypes}});
         my $gt = $$entry{gtypes}{$samples[ 0 ]}{GT};
+        my $type = $$entry{INFO}{MEINFO};my @typeInfo = split( /,/, $type );
         
         foreach my $sample ( sort( keys( %sampleBAM ) ) )
         {
-            my $quality = Utilities::genotypeRegion($chr_, $pos, $sampleBAM{ $sample }, $minMapQ, $minReads );
+            my @bams = $sampleBAM{ $sample };
+            my $quality = Utilities::testBreakPoint($chr_, $pos, \@bams, $minMapQ, qq[$chr_\t$pos\t].($pos+1).qq[\t].$typeInfo[0].qq[\t].$typeInfo[3].qq[\n], $ofh, undef, $minReads, 1 );
             if( $quality )
 	        {
 	            $$entry{gtypes}{$sample}{GT} = $gt;
-                $$entry{gtypes}{$sample}{GQ} = $quality;
+                $$entry{gtypes}{$sample}{GQ} = $quality->[0];
 	        }
 	        else
 	        {
@@ -872,6 +877,7 @@ sub _genotype
         $vcf->format_genotype_strings($entry);
         print $out $vcf_out->format_line($entry);
     }
+    close( $ofh );
     $vcf->close();
 	close( $out );
 }

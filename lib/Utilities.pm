@@ -145,7 +145,7 @@ sub _local_min_max
 
 sub testBreakPoint
 {
-    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 8;
+    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 9;
     
     my $chr = shift;
     my $refPos = shift;
@@ -156,6 +156,7 @@ sub testBreakPoint
     my $dfh = shift; #file handle to print out info on failed calls
     my $ignoreRGs = shift; #file of lines with "RG:tag\t"
     my $minReads = shift;
+    my $genotypeMode = shift; #0/1 saying whether to operate in genotyping mode (i.e. less stringent criteria)
     
     my @originalCallA = split( /\t/, $originalCall );
     
@@ -178,7 +179,7 @@ sub testBreakPoint
     {
         $cmdpre = qq[samtools view $bams[0] $chr:];
     }
-
+    
 	#also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
 	my $cmd = $cmdpre.($refPos-$BREAKPOINT_WINDOW).qq[-].($refPos+$BREAKPOINT_WINDOW).qq[ | ].(defined($ignoreRGs) ? qq[ grep -v -f $ignoreRGs |] : qq[]);
 	open( my $tfh, $cmd ) or die $!;
@@ -220,19 +221,42 @@ sub testBreakPoint
 	        my $dist = $firstBluePos - $lastBluePos;
 	        
 	        my $minBlue = int($minReads / 2);
-	        if( $lhsFwdBlue >= $minBlue && $rhsRevBlue >= $minBlue && $lhsFwd >= $minReads && $rhsRev >= $minReads && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) && $dist < 120 )
+	        
+	        if( $genotypeMode == 0 )
 	        {
-	            my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
-	            my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];
-	            print $dfh qq[PASS: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
-	            
-	            return [$ratio,$callString];
-	        }
-	        else
-	        {
-	            print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
-	            return undef;
-	        }
+                if( $lhsFwdBlue >= $minBlue && $rhsRevBlue >= $minBlue && $lhsFwd >= $minReads && $rhsRev >= $minReads && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) && $dist < 120 )
+                {
+                    my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
+                    my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];
+                    print $dfh qq[PASS: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+                    
+                    return [$ratio,$callString];
+                }
+                else
+                {
+                    print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+                    return undef;
+                }
+            }
+            else #genotyping mode - less stringent - only 1 side has to meet the criteria
+            {
+                if( ( $lhsFwdBlue >= $minBlue && $lhsFwd >= $minReads && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) )#&& $dist < 120 )
+                    ||
+                    ( $rhsRevBlue >= $minBlue && $rhsRev >= $minReads && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) )#&& $dist < 120 )
+                  )
+                {
+                    my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
+                    my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];
+                    print $dfh qq[PASS: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+                    
+                    return [$lhsFwd+$rhsRev]; #return number of reads supporting call
+                }
+                else
+                {
+                    print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+                    return undef;
+                }
+            }
 }
 
 sub genotypeRegion
