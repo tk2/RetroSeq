@@ -238,10 +238,10 @@ sub testBreakPoint
                     return undef;
                 }
             }
-            else #genotyping mode - less stringent - only 1 side has to meet the criteria
+            else #genotyping mode - less stringent num of reads required
             {
                 if( ( $lhsFwdBlue >= $minBlue && $lhsFwd >= $minReads && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) )#&& $dist < 120 )
-                    ||
+                    &&
                     ( $rhsRevBlue >= $minBlue && $rhsRev >= $minReads && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) )#&& $dist < 120 )
                   )
                 {

@@ -228,7 +228,7 @@ USAGE
     croak qq[Cant find reference genome index - please index your reference file with samtools faidx] unless -f qq[$ref.fai];
     
     my $clean = defined( $noclean ) ? 0 : 1;
-    $reads = defined( $reads ) && $reads =~ /^\d+$/ ? $reads > -1 : $DEFAULT_MIN_GENOTYPE_READS;
+    $reads = defined( $reads ) && $reads =~ /^\d+$/ && $reads > -1 ? $reads : $DEFAULT_MIN_GENOTYPE_READS;
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
     
     #test for samtools
