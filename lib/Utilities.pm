@@ -623,7 +623,7 @@ sub getBAMSampleName
             my @s = split(/\t/, $line );
             foreach my $tag (@s)
             {
-                if( $tag && $tag =~ /^(SM):(\w+)/ && ! $samples{ $2 } ){$samples{ $2 } = 1;}
+                if( $tag && $tag =~ /^(SM):(.+)/ && ! $samples{ $2 } ){$samples{ $2 } = 1;}
             }
         }
     }
