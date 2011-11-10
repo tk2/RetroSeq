@@ -28,17 +28,16 @@ use lib dirname(__FILE__).'/../lib/';
 use Vcf;
 use Utilities;
 
-my $VERSION = 0.2;
-
 my $DEFAULT_ID = 90;
 my $DEFAULT_LENGTH = 36;
 my $DEFAULT_ANCHORQ = 20;
 my $DEFAULT_MAX_DEPTH = 200;
 my $DEFAULT_READS = 10;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
-my $MAX_READ_GAP_IN_REGION = 90;
+my $MAX_READ_GAP_IN_REGION = 120;
+my $DEFAULT_MIN_CLUSTER_READS = 5;
 
-my $HEADER = qq[#retroseq v:].substr($VERSION,0,1);
+my $HEADER = qq[#retroseq v:].substr($Utilities::VERSION,0,1);
 my $FOOTER = qq[#END_CANDIDATES];
 
 my $BAMFLAGS = 
@@ -91,7 +90,7 @@ GetOptions
 print <<MESSAGE;
 
 RetroSeq: A tool for discovery and genotyping of transposable elements from short read alignments
-Version: $VERSION
+Version: $Utilities::VERSION
 Author: Thomas Keane (thomas.keane\@sanger.ac.uk)
 
 MESSAGE
@@ -371,9 +370,7 @@ sub _findCandidates
     close( $efh );
     
     if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[Alignment did not complete correctly\n];}
-    
-    #unlink( qq[$$.exonerate.out] );
-    
+
     #setup filehandles for the various TE types
     my %TE_fh;
     foreach my $type ( keys( %{ $erefs } ) )
@@ -586,7 +583,7 @@ sub _findInsertions
             #convert to a region BED (removing any candidates with very low numbers of reads)
             print qq[Calling initial rough boundaries of insertions....\n];
             my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
-            Utilities::convertToRegionBED( $sortedCandidatesBED{$currentType}, $minReads, $sampleName, $MAX_READ_GAP_IN_REGION, $rawTECalls1 );
+            Utilities::convertToRegionBED( $sortedCandidatesBED{$currentType}, $DEFAULT_MIN_CLUSTER_READS, $sampleName, $MAX_READ_GAP_IN_REGION, $rawTECalls1 );
             
             if( defined( $filterBED ) )
             {
@@ -682,7 +679,7 @@ sub _filterCallsBedMinima
 	{
 	    open( $hetsfh, qq[>$bedoutHets] ) or die $!;
 	}
-
+	
 	open( my $dfh, qq[>>$thrown_out_file] ) or die $!;
 	while( my $originalCall = <$ifh> )
 	{
@@ -703,7 +700,7 @@ sub _filterCallsBedMinima
 	    #test each point to see if has the desired signature of fwd / rev pointing reads
 	    my $found = 0;my $tested = 0;
 	    my $lastRefIndex = -1;
-	    my $minRatio = 100000;my $minRatioCall = undef;
+	    my $minRatio = 100000;my $minRatioCall = undef;my $highestFlagHom = -1;my $minRatioHom = 100000;my $minRatioCallHom;
 	    while( $tested < 5 )
 	    {
 	        #check the distance to the set tested so far (i.e. dont want to retest with a cluster of local minima)
@@ -725,25 +722,49 @@ sub _filterCallsBedMinima
 	        my $depth = $min{$positions[$newIndex]};
 	        my $refPos = $positions[ $newIndex ];
 	        
-	        last unless $depth <= $minDepth;
+	        my $flag;
+	        my $call;
+	        my $ratio;
+	        if( $depth > $minDepth )
+	        {
+	            print qq[bpoint depth too high: $depth\n];
+	            $flag = $Utilities::HOM_DEPTH_TOO_HIGH;
+	            $call = $originalCall;
+	            $ratio = 0;
+	            last;
+	        }
 	        
 	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, 0 );
 	        
-	        if( $result && $result->[0] < $minRatio )
+	        $flag = $result->[0];
+	        $call = $result->[1];
+	        $ratio = $result->[2];
+	        
+	        if( $flag == $Utilities::PASS )
 	        {
-	            $minRatio = $result->[0];
-	            $minRatioCall = $result->[1];
+	            if( $minRatioHom != 100000 )
+	            {
+	                if( $ratio < $minRatioHom ){$minRatioHom = $ratio;$minRatioCallHom = $call;$highestFlagHom = $flag;}
+	            }
+	            else
+	            {
+	                $minRatioHom = $ratio;
+	                $minRatioCallHom = $call;
+	                $highestFlagHom = $flag;
+	            }
+	        }
+	        elsif( $flag > $highestFlagHom ) #some other non PASS flag - record it
+	        {
+	            $minRatioCallHom = $call;
+	            $highestFlagHom = $flag;
 	        }
 	        
 	        $tested ++;
 	    }
 	    
-	    if( $minRatioCall )
+	    if( $hets ) #if we are also testing for het calls - then try alternative method to call a het
 	    {
-	        print $homsfh $minRatioCall;
-	    }
-	    elsif( $hets ) #if we are also testing for het calls - then try alternative method to call a het
-	    {
+	        my $minRatioHet = 100000;my $minRatioCallHet = undef;my $highestFlagHet = -1;
 	        my $candidateBreaks = Utilities::getCandidateBreakPointsDirVote( $originalCallA[ 0 ], $originalCallA[ 1 ], $originalCallA[ 2 ], \@bams, $minMapQ );
 	        next if( !defined( $candidateBreaks ) );
 	        
@@ -753,19 +774,44 @@ sub _filterCallsBedMinima
 	            last if( ! defined $candPos );
 	            print qq[Testing het breakpoint: $candPos\n];
 	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, 0 );
-	            if( $result )
-	            {
-	                $minRatio = $result->[0];
-	                $minRatioCall = $result->[1];
-	                last;
-	            }
+	            
+	            my $flag = $result->[0];
+                my $call = $result->[1];
+                my $ratio = $result->[2];
+                
+                if( $flag == $Utilities::PASS )
+                {
+                    if( $minRatioHet != 100000 )
+                    {
+                        if( $ratio < $minRatioHet ){$minRatioHet = $ratio;$minRatioCallHet = $call;}
+                    }
+                    else
+                    {
+                        $minRatioHet = $ratio;
+                        $minRatioCallHet = $call;
+                        $highestFlagHet = $flag;
+                    }
+                }
+                elsif( $flag > $highestFlagHet ) #some other non PASS flag - record it
+                {
+                    $minRatioCallHet = $call;
+                    $highestFlagHet = $flag;
+                }
 	            $tested ++;last if $tested > 5;
 	        }
 	        
-	        if( $minRatioCall )
+	        if( $highestFlagHet > $highestFlagHom )
 	        {
-	            print $hetsfh $minRatioCall;
+	            print $hetsfh $minRatioCallHet.qq[\t$highestFlagHet\n];
 	        }
+	        elsif( $highestFlagHom > -1 )
+	        {
+	            print $homsfh $minRatioCallHom.qq[\t$highestFlagHom\n];
+	        }
+	    }
+	    elsif( $highestFlagHom > -1 )
+	    {
+	        print $homsfh $minRatioCallHom.qq[\t$highestFlagHom\n];
 	    }
 	}
 	close( $ifh );
@@ -829,7 +875,7 @@ sub _genotype
 	{
 	    $vcf_out->add_columns( $sample );
 	}
-	my $header = _getVcfHeader( $vcf_out );
+	my $header = Utilities::getVcfHeader( $vcf_out );
 	print $out qq[$header];
 	
 	open( my $ofh, qq[>$output.candidates] ) or die $!;
@@ -983,7 +1029,7 @@ sub _outputCalls
     my $vcf_out = Vcf->new();
     $vcf_out->add_columns($sample);
     
-    my $header = _getVcfHeader($vcf_out);
+    my $header = Utilities::getVcfHeader($vcf_out);
     print $vfh $header;
     
     open( my $bfh, qq[>$output.bed] ) or die $!; 
@@ -1002,7 +1048,8 @@ sub _outputCalls
                 my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
                 my $ci1 = $s[ 1 ] - $pos;
                 my $ci2 = $s[ 2 ] - $pos;
-                my $dir = defined( $s[ 5 ] ) && length( $s[ 5 ] ) > 0 ? $s[ 5 ] : 'NA';
+                my $flag = $s[ 5 ];
+                my $dir = defined( $s[ 6 ] ) && length( $s[ 6 ] ) > 0 ? $s[ 6 ] : 'NA';
                 
                 print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\t$s[4]\t$dir\n];
                 
@@ -1013,12 +1060,19 @@ sub _outputCalls
                 $out{ALT}    = ['<INS:ME>'];
                 $out{REF}    = $refbase;
                 $out{QUAL}   = $s[ 4 ];
-                $out{FILTER} = ['NOT_VALIDATED'];
                 $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],$dir] };
-                $out{FORMAT} = ['GT', 'GQ'];
+                $out{FORMAT} = ['GT', 'GQ', 'FL'];
                 
-                $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>/<INS:ME>];
+                if( $flag == $Utilities::PASS )
+                {
+                    $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>/<INS:ME>];
+                }
+                else
+                {
+                    $out{gtypes}{$s[3]}{GT} = qq[0/0];
+                }
                 $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
+                $out{gtypes}{$s[3]}{FL} = $flag;
                 
                 $vcf_out->format_genotype_strings(\%out);
                 print $vfh $vcf_out->format_line(\%out);
@@ -1038,7 +1092,8 @@ sub _outputCalls
                 my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
                 my $ci1 = $s[ 1 ] - $pos;
                 my $ci2 = $s[ 2 ] - $pos;
-                my $dir = defined( $s[ 5 ] ) && length( $s[ 5 ] ) > 0 ? $s[ 5 ] : 'NA';
+                my $flag = $s[ 5 ];
+                my $dir = defined( $s[ 6 ] ) && length( $s[ 6 ] ) > 0 ? $s[ 6 ] : 'NA';
                 
                 print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\t$s[4]\t$dir\n];
                 
@@ -1049,12 +1104,19 @@ sub _outputCalls
                 $out{ALT}    = [$refbase,'<INS:ME>'];
                 $out{REF}    = $refbase;
                 $out{QUAL}   = $s[ 4 ];
-                $out{FILTER} = ['NOT_VALIDATED'];
                 $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],$dir] };
-                $out{FORMAT} = ['GT','GQ'];
+                $out{FORMAT} = ['GT','GQ', 'FL'];
                 
-                $out{gtypes}{$s[3]}{GT} = qq[$refbase/<INS:ME>];
+                if( $flag == $Utilities::PASS )
+                {
+                    $out{gtypes}{$s[3]}{GT} = qq[$refbase/<INS:ME>];
+                }
+                else
+                {
+                    $out{gtypes}{$s[3]}{GT} = qq[0/0];
+                }
                 $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
+                $out{gtypes}{$s[3]}{FL} = $flag;
                 
                 $vcf_out->format_genotype_strings(\%out);
                 print $vfh $vcf_out->format_line(\%out);
@@ -1121,33 +1183,6 @@ sub _sortBED
     croak qq[Cant find intput file for BED sort: $input\n] unless -f $input;
     system( qq[sort -k 1,1d -k 2,2n $input > $output] ) == 0 or die qq[Failed to sort BED file: $input\n];
     return 1;
-}
-
-#creates all the tags necessary for the VCF files
-sub _getVcfHeader
-{
-    my $vcf_out = shift;
-    
-    $vcf_out->add_header_line({key=>'source',value=>'RetroSeq v'.$VERSION});
-    
-    ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
-    $vcf_out->add_header_line( {key=>'INFO',ID=>'SVTYPE',Number=>'1',Type=>'String', Description=>'Type of structural variant'} );
-    
-    ##INFO=<ID=MEINFO,Number=4,Type=String,Description="Mobile element info of the form NAME,START,END,POLARITY">
-    $vcf_out->add_header_line( {key=>'INFO',ID=>'MEINFO',Number=>'4',Type=>'String', Description=>'Mobile element info of the form NAME,START,END,POLARITY'} );
-    
-    ##ALT=<ID=INS:ME,Description="Insertion of a mobile element">
-    $vcf_out->add_header_line( {key=>'ALT', ID=>'INS:ME', Type=>'String', Description=>"Insertion of a mobile element"} );
-    
-    ##FORMAT=<ID=GT,Number=1,Type=Integer,Description="Genotype">
-    $vcf_out->add_header_line({key=>'FORMAT',ID=>'GT',Number=>'1',Type=>'String',Description=>"Genotype"});
-    
-    ##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype quality">
-    $vcf_out->add_header_line( {key=>'FORMAT', ID=>'GQ', Number=>'1', Type=>'Float', Description=>'Genotype quality'} );
-    
-    $vcf_out->add_header_line( {key=>'INFO', ID=>'NOT_VALIDATED', Number=>'0', Type=>'Flag', Description=>'Not validated experimentally'} );
-    
-    return $vcf_out->format_header();
 }
 
 sub _revCompDNA

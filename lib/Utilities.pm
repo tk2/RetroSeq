@@ -22,6 +22,21 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
+#status that can be returned from calling
+our $UNKNOWN_FAIL = 0;
+our $HOM_DEPTH_TOO_HIGH = 1;
+our $NOT_ENOUGH_READS_CLUSTER = 2;
+our $NOT_ENOUGH_READS_FLANKS = 3;
+our $NOT_ENOUGH_READS_BLUE = 4;
+our $NEITHER_SIDE_RATIO_PASSES = 5;
+our $ONE_SIDED_RATIO_PASSES = 6;
+our $DISTANCE_THRESHOLD = 7;
+our $PASS = 8;
+our $FILTER_NAMES = ['Fail', 'HomBreakDepth', 'MinReads', 'MinReadsFlanks', 'MinReadsBlue', 'BothRatioFail', 'OneRatioFail', 'DistanceThreshold' ];
+our $FILTER_DESC = ['Unknown fail', 'HomBreakDepth', 'Not enough supporting reads', 'Not enough supporting reads on either flanking sides', 'Not enough supporting multi-mapped reads', 'Neither side has required ratio of fwd:rev reads', 'One side has required ratio of fwd:rev reads', 'Distance between 3\' and 5\' reads is greater than threshold' ];
+
+our $VERSION = 0.2;
+
 sub filterOutRegions
 {
     my $inputBED = shift;
@@ -187,43 +202,83 @@ sub testBreakPoint
 	{
 	    chomp( $sam );
 	    my @s = split( /\t/, $sam );
-	            next unless $s[ 4 ] > $minMapQ;
-	            #        the mate is mapped                       or mate ref name is different chr
-	            if( !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'}) && ( $s[ 6 ] ne '=' ) )
-	            {
-	                if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
-	                {
-	                    if( $s[ 3 ] < $refPos ){$lhsRevBlue++;}else{$rhsRevBlue++;$firstBluePos = $s[ 3 ] if( $s[ 3 ] < $firstBluePos );}
-	                }
-	                else
-	                {
-	                    if( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastBluePos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastBluePos );}else{$rhsFwdBlue++;}
-	                }
-	            }
-	            #        the mate is unmapped
-	            elsif( $s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} )
-	            {
-	                if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
-	                {
-	                    if( $s[ 3 ] < $refPos ){$lhsRevGreen++;}else{$rhsRevGreen++;}
-	                }
-	                else
-	                {
-	                    if( $s[ 3 ] < $refPos ){$lhsFwdGreen++;}else{$rhsFwdGreen++;}
-	                }
-	            }
-	        }
+        next unless $s[ 4 ] > $minMapQ;
+        #        the mate is mapped                       or mate ref name is different chr
+        if( !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'}) && ( $s[ 6 ] ne '=' ) )
+        {
+            if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
+            {
+                if( $s[ 3 ] < $refPos ){$lhsRevBlue++;}else{$rhsRevBlue++;$firstBluePos = $s[ 3 ] if( $s[ 3 ] < $firstBluePos );}
+            }
+            else
+            {
+                if( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastBluePos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastBluePos );}else{$rhsFwdBlue++;}
+            }
+        }
+        #        the mate is unmapped
+        elsif( $s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} )
+        {
+            if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
+            {
+                if( $s[ 3 ] < $refPos ){$lhsRevGreen++;}else{$rhsRevGreen++;}
+            }
+            else
+            {
+                if( $s[ 3 ] < $refPos ){$lhsFwdGreen++;}else{$rhsFwdGreen++;}
+            }
+        }
+    }
 	        
-	        unlink( qq[/tmp/$$.region.bam] );
-	        
-	        #check there are supporting read pairs either side of the depth minima
-	        my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
-	        my $dist = $firstBluePos - $lastBluePos;
-	        
-	        my $minBlue = int($minReads / 2);
-	        
-	        if( $genotypeMode == 0 )
-	        {
+    unlink( qq[/tmp/$$.region.bam] );
+    
+    #check there are supporting read pairs either side of the depth minima
+    my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
+    my $dist = $firstBluePos - $lastBluePos;
+    
+    my $minBlue = int($minReads / 2);
+
+    print $dfh qq[TEST: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+    
+    if( ! $genotypeMode ) #calling mode
+    {
+        my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]];
+        
+        #want to be more descriptive with filter values to return e.g. total reads too low, one-side ok only, sides OK but distance too large
+        my $lhsRatioPass = ( $lhsRevBlue == 0 ) || ( $lhsRevBlue > 0 && $lhsFwdBlue / $lhsRevBlue > 2 );
+        my $rhsRatioPass = ( $rhsFwdBlue == 0 ) || ( $rhsFwdBlue > 0 && $rhsRevBlue / $rhsFwdBlue > 2 );
+        
+        if( ( $lhsFwd + $rhsRev ) < $minReads )
+        {
+            return [$NOT_ENOUGH_READS_CLUSTER, $callString, 0];
+        }
+        elsif( $lhsFwd < $minReads || $rhsRev < $minReads )
+        {
+            return [$NOT_ENOUGH_READS_FLANKS, $callString, 0];
+        }
+        elsif( $lhsFwdBlue < $minBlue || $rhsRevBlue < $minBlue )
+        {
+            return [$NOT_ENOUGH_READS_BLUE, $callString, 0];
+        }
+        elsif( ! $lhsRatioPass && ! $rhsRatioPass )
+        {
+            return [$NEITHER_SIDE_RATIO_PASSES, $callString, 0];
+        }
+        elsif( ! ( $lhsRatioPass && $rhsRatioPass ) )
+        {
+            return [$ONE_SIDED_RATIO_PASSES, $callString, 0];
+        }
+        elsif( $dist > 120 )
+        {
+            return [$DISTANCE_THRESHOLD, $callString, 0];
+        }
+        else
+        {
+            my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev );
+            return [$PASS, $callString, $ratio];
+        }
+        
+        return [$UNKNOWN_FAIL, $callString, 10000 ];
+=pod	            
                 if( $lhsFwdBlue >= $minBlue && $rhsRevBlue >= $minBlue && $lhsFwd >= $minReads && $rhsRev >= $minReads && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) && $dist < 120 )
                 {
                     my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
@@ -237,11 +292,12 @@ sub testBreakPoint
                     print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
                     return undef;
                 }
+=cut
             }
             else #genotyping mode - less stringent num of reads required
             {
                 if( ( $lhsFwdBlue >= $minBlue && $lhsFwd >= $minReads && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) )#&& $dist < 120 )
-                    &&
+                    ||
                     ( $rhsRevBlue >= $minBlue && $rhsRev >= $minReads && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) )#&& $dist < 120 )
                   )
                 {
@@ -623,7 +679,7 @@ sub getBAMSampleName
             my @s = split(/\t/, $line );
             foreach my $tag (@s)
             {
-                if( $tag && $tag =~ /^(SM):(.+)/ && ! $samples{ $2 } ){$samples{ $2 } = 1;}
+                if( $tag && $tag =~ /^(SM):(\w+)/ && ! $samples{ $2 } ){$samples{ $2 } = 1;}
             }
         }
     }
@@ -665,7 +721,10 @@ sub _mergeRegionBAMs
             $str .= qq[ $ind_bam];
         }
         system( qq[samtools merge -f $output $str;samtools index $output] ) == 0 or die qq[Failed to merge region BAMs for region $chr:$start-$end : $str\n];
-        unlink( glob( qq[/tmp/$$.*.ind_region.bam] ) );
+        for(my $i=0;$i<@bams;$i++)
+        {
+            unlink( qq[/tmp/$$.$i.ind_region.bam] );
+        }
     }
     else
     {
@@ -709,6 +768,41 @@ sub checkBinary
         close( $bfh );
         die qq[ERROR: Cant determine version number of $binary\n] unless $hasOutput;
     }
+}
+
+#creates all the tags necessary for the VCF files
+sub getVcfHeader
+{
+    my $vcf_out = shift;
+    
+    $vcf_out->add_header_line({key=>'source',value=>'RetroSeq v'.$VERSION});
+    
+    ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+    $vcf_out->add_header_line( {key=>'INFO',ID=>'SVTYPE',Number=>'1',Type=>'String', Description=>'Type of structural variant'} );
+    
+    ##INFO=<ID=MEINFO,Number=4,Type=String,Description="Mobile element info of the form NAME,START,END,POLARITY">
+    $vcf_out->add_header_line( {key=>'INFO',ID=>'MEINFO',Number=>'4',Type=>'String', Description=>'Mobile element info of the form NAME,START,END,POLARITY'} );
+    
+    ##ALT=<ID=INS:ME,Description="Insertion of a mobile element">
+    $vcf_out->add_header_line( {key=>'ALT', ID=>'INS:ME', Type=>'String', Description=>"Insertion of a mobile element"} );
+    
+    ##FORMAT=<ID=GT,Number=1,Type=Integer,Description="Genotype">
+    $vcf_out->add_header_line({key=>'FORMAT',ID=>'GT',Number=>'1',Type=>'String',Description=>"Genotype"});
+    
+    ##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype quality">
+    $vcf_out->add_header_line( {key=>'FORMAT', ID=>'GQ', Number=>'1', Type=>'Float', Description=>'Genotype quality'} );
+
+    ##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype quality">
+    $vcf_out->add_header_line( {key=>'FORMAT', ID=>'FL', Number=>'1', Type=>'Integer', Description=>'Call Status - for reference calls a flag to say if the call failed a particular filter. Filters are ordered by priority in calling (higher number indicates closer to being called). 1 - depth too high in region, 2 - not enough reads in cluster, 3 - not enough total flanking reads, 4 - not enough inconsistently mapped reads, 5 - neither side passes ratio test, 6 - one side passes ratio test, 7 - distance too large at breakpoint, 8 - PASSED all filters'} );
+    
+    $vcf_out->add_header_line( {key=>'INFO', ID=>'NOT_VALIDATED', Number=>'0', Type=>'Flag', Description=>'Not validated experimentally'} );
+=pod    
+    for( my $i = 0; $i < @{$FILTER_NAMES}; $i ++ )
+    {
+        $vcf_out->add_header_line( {key=>'FILTER', ID=>$FILTER_NAMES->[$i], Description=>$FILTER_DESC->[$i]} );
+    }
+=cut
+    return $vcf_out->format_header();
 }
 
 1;
