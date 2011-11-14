@@ -195,6 +195,9 @@ sub testBreakPoint
         $cmdpre = qq[samtools view $bams[0] $chr:];
     }
     
+    #compute the distance from the breakpoint to the last fwd read and the first rev read (and then add this to the read window buffer)
+    
+    
 	#also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
 	my $cmd = $cmdpre.($refPos-$BREAKPOINT_WINDOW).qq[-].($refPos+$BREAKPOINT_WINDOW).qq[ | ].(defined($ignoreRGs) ? qq[ grep -v -f $ignoreRGs |] : qq[]);
 	open( my $tfh, $cmd ) or die $!;
@@ -474,8 +477,9 @@ sub getCandidateBreakPointsDirVote
         my $flag = $samL[ 1 ];
         
         #update the counts to the current position
-        for(my $i=$fwdCurrentPos;$i<$samL[3];$i++ ){$fwdCount{$i}=$fwdCount{$i-1};}
-        for(my $i=$revCurrentPos;$i<$samL[3];$i++ ){$revCount{$i}=$revCount{$i-1};}
+        my $gap = 0; #apply a gap-open penalty to the score to avoid odd spurious read throwing off counts
+        for(my $i=$fwdCurrentPos;$i<$samL[3];$i++ ){$gap++;if($gap%30==0&&$fwdCount{$i-1}>0){$fwdCount{$i}=$fwdCount{$i-1} - 1;}else{$fwdCount{$i}=$fwdCount{$i-1};}}
+        for(my $i=$revCurrentPos;$i<$samL[3];$i++ ){$gap++;if($gap%30==0&&$revCount{$i-1}<0){$revCount{$i}=$revCount{$i-1} + 1;}else{$revCount{$i}=$revCount{$i-1};}}
         
         next if $samL[ 4 ] < $minQ;
         next if ( $flag & $$BAMFLAGS{'duplicate'} );
@@ -505,9 +509,9 @@ sub getCandidateBreakPointsDirVote
     #now find the position where the sum of the two counts maximises
     my $maxPos = $start;my @maxPoss;my $maxVal = $fwdCount{$start}+$revCount{$start};
     
-    for(my $i=$start;$i<$revCurrentPos&&$i<$fwdCurrentPos;$i++)
+    for(my $i=$start;$i<$revCurrentPos;$i++)
     {
-        if( $fwdCount{$i}+$revCount{$i} > $maxVal )
+        if( $fwdCount{$i}+$revCount{$i} >= $maxVal )
         {
             $maxPos = $i;
             @maxPoss = ();
@@ -679,7 +683,7 @@ sub getBAMSampleName
             my @s = split(/\t/, $line );
             foreach my $tag (@s)
             {
-                if( $tag && $tag =~ /^(SM):(\w+)/ && ! $samples{ $2 } ){$samples{ $2 } = 1;}
+                if( $tag && $tag =~ /^(SM):(\S+)/ && ! $samples{ $2 } ){$samples{ $2 } = 1;}
             }
         }
     }
@@ -796,12 +800,9 @@ sub getVcfHeader
     $vcf_out->add_header_line( {key=>'FORMAT', ID=>'FL', Number=>'1', Type=>'Integer', Description=>'Call Status - for reference calls a flag to say if the call failed a particular filter. Filters are ordered by priority in calling (higher number indicates closer to being called). 1 - depth too high in region, 2 - not enough reads in cluster, 3 - not enough total flanking reads, 4 - not enough inconsistently mapped reads, 5 - neither side passes ratio test, 6 - one side passes ratio test, 7 - distance too large at breakpoint, 8 - PASSED all filters'} );
     
     $vcf_out->add_header_line( {key=>'INFO', ID=>'NOT_VALIDATED', Number=>'0', Type=>'Flag', Description=>'Not validated experimentally'} );
-=pod    
-    for( my $i = 0; $i < @{$FILTER_NAMES}; $i ++ )
-    {
-        $vcf_out->add_header_line( {key=>'FILTER', ID=>$FILTER_NAMES->[$i], Description=>$FILTER_DESC->[$i]} );
-    }
-=cut
+    $vcf_out->add_header_line( {key=>'INFO', ID=>'1000G', Number=>'0', Type=>'Flag', Description=>'Overlaps with 1000G MEI call'} );
+    $vcf_out->add_header_line( {key=>'INFO', ID=>'REPEATMASKER', Number=>'0', Type=>'Flag', Description=>'Overlaps with a reference ME element'} );
+
     return $vcf_out->format_header();
 }
 
