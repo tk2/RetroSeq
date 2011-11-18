@@ -691,128 +691,28 @@ sub _filterCallsBedMinima
 	    
 	    my $start = $originalCallA[ 1 ];my $end = $originalCallA[ 2 ];my $chr = $originalCallA[ 0 ];
 	    
-	    my $t = Utilities::getCandidateBreakPointsDepth( $originalCallA[0], $originalCallA[1], $originalCallA[2], \@bams, $ref, $dfh );
+	    my $t = Utilities::getCandidateBreakPointsDirVote($originalCallA[0], $originalCallA[1], $originalCallA[2],\@bams,20 );
 	    if( ! $t ){warn qq[Failed to get candidate breakpoints for call $originalCall\n];next;}
-	    my @t = @{ $t };
+	    my $breakpoint = $t->[ 0 ];my $depth = $t->[ 1 ];
 	    
-	    my @positions = @{ $t[ 0 ] };my %min = %{ $t[ 1 ] };
-	    
-	    #test each point to see if has the desired signature of fwd / rev pointing reads
-	    my $found = 0;my $tested = 0;
-	    my $lastRefIndex = -1;
-	    my $minRatio = 100000;my $minRatioCall = undef;my $highestFlagHom = -1;my $minRatioHom = 100000;my $minRatioCallHom;
-	    while( $tested < 5 )
-	    {
-	        #check the distance to the set tested so far (i.e. dont want to retest with a cluster of local minima)
-	        my $newIndex = $lastRefIndex + 1;
-	        while( $newIndex < @positions )
-	        {
-	            my $closeby = 0;
-	            for( my $j = 0; $j < $newIndex; $j ++ )
-	            {
-	                if( abs( $positions[$newIndex] - $positions[ $j ] ) < 50 ){$closeby = 1;last;}
-	            }
-	            last if( $closeby == 0 );
-	            $newIndex ++;
-	        }
-	        last if $newIndex == @positions;
-	        
-	        print qq[Testing hom breakpoint $positions[ $newIndex ]\n];
-	        $lastRefIndex = $newIndex;
-	        my $depth = $min{$positions[$newIndex]};
-	        my $refPos = $positions[ $newIndex ];
-	        
-	        my $flag;
-	        my $call;
-	        my $ratio;
-	        if( $depth > $minDepth )
-	        {
-	            print qq[bpoint depth too high: $depth\n];
-	            $flag = $Utilities::HOM_DEPTH_TOO_HIGH;
-	            $call = $originalCall;
-	            $ratio = 0;
-	            last;
-	        }
-	        
-	        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $refPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, 0 );
-	        
-	        $flag = $result->[0];
-	        $call = $result->[1];
-	        $ratio = $result->[2];
-	        
-	        if( $flag == $Utilities::PASS )
-	        {
-	            if( $minRatioHom != 100000 )
-	            {
-	                if( $ratio < $minRatioHom ){$minRatioHom = $ratio;$minRatioCallHom = $call;$highestFlagHom = $flag;}
-	            }
-	            else
-	            {
-	                $minRatioHom = $ratio;
-	                $minRatioCallHom = $call;
-	                $highestFlagHom = $flag;
-	            }
-	        }
-	        elsif( $flag > $highestFlagHom ) #some other non PASS flag - record it
-	        {
-	            $minRatioCallHom = $call;
-	            $highestFlagHom = $flag;
-	        }
-	        
-	        $tested ++;
-	    }
-	    
-	    if( $hets ) #if we are also testing for het calls - then try alternative method to call a het
-	    {
-	        my $minRatioHet = 100000;my $minRatioCallHet = undef;my $highestFlagHet = -1;
-	        my $candidateBreaks = Utilities::getCandidateBreakPointsDirVote( $originalCallA[ 0 ], $originalCallA[ 1 ], $originalCallA[ 2 ], \@bams, $minMapQ );
-	        next if( !defined( $candidateBreaks ) );
-	        
-	        my $tested = 0;
-	        foreach my $candPos( @{$candidateBreaks} )
-	        {
-	            last if( ! defined $candPos );
-	            print qq[Testing het breakpoint: $candPos\n];
-	            my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $candPos, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, 0 );
-	            
-	            my $flag = $result->[0];
-                my $call = $result->[1];
-                my $ratio = $result->[2];
-                
-                if( $flag == $Utilities::PASS )
-                {
-                    if( $minRatioHet != 100000 )
-                    {
-                        if( $ratio < $minRatioHet ){$minRatioHet = $ratio;$minRatioCallHet = $call;}
-                    }
-                    else
-                    {
-                        $minRatioHet = $ratio;
-                        $minRatioCallHet = $call;
-                        $highestFlagHet = $flag;
-                    }
-                }
-                elsif( $flag > $highestFlagHet ) #some other non PASS flag - record it
-                {
-                    $minRatioCallHet = $call;
-                    $highestFlagHet = $flag;
-                }
-	            $tested ++;last if $tested > 5;
-	        }
-	        
-	        if( $highestFlagHet > $highestFlagHom )
-	        {
-	            print $hetsfh $minRatioCallHet.qq[\t$highestFlagHet\n];
-	        }
-	        elsif( $highestFlagHom > -1 )
-	        {
-	            print $homsfh $minRatioCallHom.qq[\t$highestFlagHom\n];
-	        }
-	    }
-	    elsif( $highestFlagHom > -1 )
-	    {
-	        print $homsfh $minRatioCallHom.qq[\t$highestFlagHom\n];
-	    }
+        print qq[Testing breakpoint $breakpoint\n];
+        
+        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $breakpoint, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, 0 );
+        
+        my $flag = $result->[0];
+        my $call = $result->[1];
+        my $ratio = $result->[2];
+        print qq[Breakpoint score: $ratio Flag: $flag\n];
+
+        #decide if its a hom or het call by the depth
+        if( $depth <= 10 )
+        {
+            print $homsfh $call.qq[\t$flag\n];
+        }
+        elsif( $hets )
+        {
+            print $hetsfh $call.qq[\t$flag\n];
+        }
 	}
 	close( $ifh );
 	close( $homsfh );

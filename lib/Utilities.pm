@@ -5,7 +5,7 @@ use warnings;
 use Carp;
 
 my $FILTER_WINDOW = 50;
-my $BREAKPOINT_WINDOW = 220;
+my $BREAKPOINT_WINDOW = 250;
 
 my $BAMFLAGS = 
 {
@@ -231,7 +231,7 @@ sub testBreakPoint
             }
         }
     }
-	        
+    
     unlink( qq[/tmp/$$.region.bam] );
     
     #check there are supporting read pairs either side of the depth minima
@@ -360,83 +360,6 @@ sub genotypeRegion
 	 return undef;
 }
 
-sub getCandidateBreakPointsDir
-{
-    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 5;
-    
-    my $chr = shift;
-    my $start = shift;
-    my $end = shift;
-    my $bam = shift;
-    my $minQ = shift;
-    
-    if( $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
-    if( ! -f $bam ){die qq[ERROR: Cant find bam file: $bam];}
-    
-    #get the reads over the region into a bam on local /tmp first
-    my $cmd = qq[samtools view $bam -h -b $chr:].($start-1000).qq[-].($end+1000).qq[ > /tmp/$$.region.bam; samtools index /tmp/$$.region.bam];
-    if( system( $cmd ) != 0 )
-    {
-        die qq[WARNING: Failed to extract region from BAM for call $chr:$start-$end];
-        return undef;
-    }
-    
-    #get the coverage of the forward orientated reads
-    #                   get sam                                 filter out low map Q reads                               mate is unmapped    mate not mapped in proper pair             mapped of fwd strand
-    $cmd = qq[samtools view -h /tmp/$$.region.bam $chr:$start-$end | gawk -F"\\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)==0' | samtools view -bS - > /tmp/].qq[$$.fwd.bam];
-    my $fwdpos = undef;
-    if( ! system( $cmd ) )
-    {
-        #call pileup to get the depth profile                                           get the max depth position
-        $cmd = qq[samtools mpileup -A /tmp/$$.fwd.bam | sort -k4,4n | tail -1 | ].q[awk -F"\t" '{print $2}' | ];
-        open( my $tfh, $cmd ) or warn $!;
-        $fwdpos = <$tfh>;
-        if( ! defined( $fwdpos ) ){warn qq[WARNING: Failed to get the fwdpos for het call: $chr:$start-$end];unlink(qq[/tmp/$$.region.bam]);return undef;}
-        chomp( $fwdpos );
-    }
-    else{warn qq[Failed to run samtools over region to generate fwd reads bam: $cmd\n];unlink(qq[/tmp/$$.region.bam]);return undef;}
-    
-    unlink( qq[/tmp/$$.fwd.bam] ) > 0 or warn qq[WARNING: Failed to delete /tmp/$$.fwd.bam files];
-    
-    if( !$fwdpos || $fwdpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate fwd heterozygous breakpoints for $chr:$start-$end\n];unlink(qq[/tmp/$$.region.bam]);return undef;}
-    
-    #get the coverage of the reverse orientated reads
-    #                   get sam                                 filter out low map Q reads                               mate is unmapped    mate not mapped in proper pair             mapped of rev strand
-    $cmd = qq[samtools view /tmp/$$.region.bam -h $chr:$start-$end | gawk -F"\\t" '(\$1~/^\@/||\$4>=$minQ)'].q[ | gawk -F"\t" '($1~/^@/||and($2,0x0008)||and($2,0x0002)==0)' | gawk -F"\t" '$1~/^@/||and($2,0x0010)' | samtools view -bS - > /tmp/].qq[$$.rev.bam];
-    my $revpos = undef;
-    if( ! system( $cmd ) )
-    {
-        $cmd = qq[samtools mpileup -A /tmp/$$.rev.bam | sort -k4,4n | tail -1 | ].q[awk -F"\t" '{print $2}' | ];
-        open( my $tfh, $cmd ) or warn $!;
-        $revpos = <$tfh>;
-        if( ! defined( $revpos ) ){warn qq[WARNING: Failed to get the revpos for het call: $chr:$start-$end];unlink(qq[/tmp/$$.region.bam]);return undef;}
-        chomp( $revpos );
-    }
-    else{warn qq[Failed to run samtools over region to generate rev reads bam: $cmd\n];}
-    
-    unlink( qq[/tmp/$$.rev.bam] ) > 0 or warn qq[WARNING: Failed to delete /tmp/$$.rev.bam files];
-    
-    if( !$revpos || $revpos !~ /^\d+$/ ){print qq[WARNING: Failed to estimate rev heterozygous breakpoints for $chr:$start-$end\n];unlink(qq[/tmp/$$.region.bam]);return undef;}
-    
-    #find the point with the lowest depth between the candidate points
-    $cmd = qq[samtools view -h -b /tmp/$$.region.bam -h $chr:].($fwdpos-200).qq[-].($revpos+200).qq[ > /tmp/$$.localised.bam];
-    my $lowestDPos = undef;
-    if( ! system( $cmd ) )
-    {
-        $cmd = qq[ samtools mpileup -A /tmp/$$.localised.bam | ].q[ awk -F"\t" '$2>$fwdpos&&$2<$revpos' | sort -k4,4n | head -1 | ].q[awk -F"\t" '{print $2}' | ];
-        open( my $tfh, $cmd ) or warn $!;
-        $lowestDPos = <$tfh>;
-        if( ! defined( $lowestDPos ) ){warn qq[WARNING: Failed to get the lowest depth pos for het call: $chr:$start-$end];}
-        else{chomp( $lowestDPos );}
-    }else{warn qq[Failed to run samtools over region to generate localised reads bam: $cmd\n];}
-    
-    unlink( qq[/tmp/$$.region.bam], qq[/tmp/$$.region.bam.bai], qq[/tmp/$$.localised.bam] ) > 0 or warn qq[WARNING: Failed to delete /tmp/$$.region.bam files];
-    
-    my @positions = (int(( $fwdpos + $revpos ) / 2), int($fwdpos+(($revpos-$fwdpos)*0.25)), int($fwdpos+(($revpos-$fwdpos)*0.75)));
-    push( @positions, $lowestDPos ) if( $lowestDPos );
-    return \@positions;
-}
-
 sub getCandidateBreakPointsDirVote
 {
     die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 5;
@@ -446,7 +369,7 @@ sub getCandidateBreakPointsDirVote
     my $end = shift;
 	my @bams = @{ $_[ 0 ] };shift;
     my $minQ = shift;
-
+    
     if( $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
     
     my %fwdCount;
@@ -470,25 +393,39 @@ sub getCandidateBreakPointsDirVote
     my $revCurrentPos = $start;
     $fwdCount{ $fwdCurrentPos - 1 } = 0;
     $revCount{ $revCurrentPos - 1 } = 0;
+    my %endCounts;
     while( my $sam = <$tfh> )
     {
         chomp( $sam );
         my @samL = split( /\t/, $sam );
         my $flag = $samL[ 1 ];
         
-        #update the counts to the current position
-        my $gap = 0; #apply a gap-open penalty to the score to avoid odd spurious read throwing off counts
-        for(my $i=$fwdCurrentPos;$i<$samL[3];$i++ ){$gap++;if($gap%30==0&&$fwdCount{$i-1}>0){$fwdCount{$i}=$fwdCount{$i-1} - 1;}else{$fwdCount{$i}=$fwdCount{$i-1};}}
-        for(my $i=$revCurrentPos;$i<$samL[3];$i++ ){$gap++;if($gap%30==0&&$revCount{$i-1}<0){$revCount{$i}=$revCount{$i-1} + 1;}else{$revCount{$i}=$revCount{$i-1};}}
-        
         next if $samL[ 4 ] < $minQ;
         next if ( $flag & $$BAMFLAGS{'duplicate'} );
+
+        #update the counts to the current position
+        my $gap = 0; #apply a gap-open penalty to the score to avoid odd spurious read throwing off counts
+        for(my $i=$fwdCurrentPos;$i<$samL[3];$i++ )
+        {
+            $gap++;
+            my $add = 0;if( $endCounts{ $i } ){$add=$endCounts{ $i };}
+            if($gap%100==0&&$fwdCount{$i-1}>0)
+            {
+                $fwdCount{$i}=$fwdCount{$i-1} - 1 + $add;
+            }
+            else
+            {
+                $fwdCount{$i}=$fwdCount{$i-1} + $add;
+            }
+        }
+        for(my $i=$revCurrentPos;$i<$samL[3];$i++ ){$gap++;if($gap%100==0&&$revCount{$i-1}<0){$revCount{$i}=$revCount{$i-1} + 1;}else{$revCount{$i}=$revCount{$i-1};}}
+        
         #       paired technology                       not paired correctly                    is on fwd strand
         if( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && !( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #fwd supporting read
         {
             no warnings 'uninitialized'; #perl warns when the value is 0
-            $fwdCount{ $samL[ 3 ] } = $fwdCount{ $samL[ 3 ] - 1 } + 1;
-            $fwdCurrentPos = $samL[ 3 ] + 1;
+            my $endPos = $samL[ 3 ] + length( $samL[ 9 ] );
+            if( $endCounts{ $endPos } ){$endCounts{$endPos}++;}else{$endCounts{$endPos} = 1;};
         }
         #       paired technology                       not paired correctly                    is on rev strand
         elsif( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && ( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #rev supporting read
@@ -511,6 +448,8 @@ sub getCandidateBreakPointsDirVote
     
     for(my $i=$start;$i<$revCurrentPos;$i++)
     {
+        my $sum = $fwdCount{$i}+$revCount{$i};
+        print qq[$i\t$sum\n];
         if( $fwdCount{$i}+$revCount{$i} >= $maxVal )
         {
             $maxPos = $i;
@@ -524,9 +463,27 @@ sub getCandidateBreakPointsDirVote
         }
     }
     
+    return undef if( ! @maxPoss );
+    
     $maxPos = $maxPoss[ int(scalar(@maxPoss)/2) ];
     
-    return [$maxPos];
+    #get the depth at the position
+    my $depth = 100;
+    $cmd = '';
+    if( @bams > 1 )
+    {
+        $cmd = qq[samtools mpileup -r $chr:$maxPos-$maxPos /tmp/$$.region.bam | ];
+    }
+    else
+    {
+        $cmd = qq/samtools mpileup -r $chr:$maxPos-$maxPos $bams[0] | /;
+    }
+    
+    open( my $ifh, $cmd ) or die qq[failed on samtools cmd: $cmd\n];
+    my $mpileupOut = <$ifh>;
+    @s = split( /\t/, $mpileupOut );
+    
+    return [$maxPos, length($s[4]) ];
 }
 
 #convert the individual read calls to calls for putative TE insertion calls
