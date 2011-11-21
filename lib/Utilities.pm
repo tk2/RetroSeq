@@ -483,7 +483,7 @@ sub getCandidateBreakPointsDirVote
     my $mpileupOut = <$ifh>;
     @s = split( /\t/, $mpileupOut );
     
-    return [$maxPos, length($s[4]) ];
+    return [$maxPos, length($s[4]) ]; #also need to return the size of the window to the two clusters either side of the breakpoint
 }
 
 #convert the individual read calls to calls for putative TE insertion calls
