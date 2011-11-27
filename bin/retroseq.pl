@@ -301,7 +301,7 @@ sub _findCandidates
                     delete( $candidates{ $name } );
                 }
             }
-            if( $currentChr ne $ref ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
+            if( $currentChr ne $ref && $ref ne '*' ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
         }
         close( $ffh );
         close( $afh );
@@ -349,7 +349,7 @@ sub _findCandidates
     }
     
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
-    open( my $efh, qq[exonerate --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die qq[Exonerate failed to run: $!];
+    open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die qq[Exonerate failed to run: $!];
     print qq[Parsing alignments....\n];
     my $lastLine;
     my %anchors;
@@ -370,7 +370,7 @@ sub _findCandidates
     close( $efh );
     
     if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[Alignment did not complete correctly\n];}
-
+    
     #setup filehandles for the various TE types
     my %TE_fh;
     foreach my $type ( keys( %{ $erefs } ) )
@@ -894,7 +894,7 @@ sub _getCandidateTEReadNames
                print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\n];
             }
         }
-        if( $currentChr ne $ref ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
+        if( $currentChr ne $ref && $ref ne '*' ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
     }
     close( $bfh );
     
