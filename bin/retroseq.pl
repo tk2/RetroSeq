@@ -28,14 +28,15 @@ use lib dirname(__FILE__).'/../lib/';
 use Vcf;
 use Utilities;
 
-my $DEFAULT_ID = 90;
+my $DEFAULT_ID = 80;
 my $DEFAULT_LENGTH = 36;
 my $DEFAULT_ANCHORQ = 20;
 my $DEFAULT_MAX_DEPTH = 200;
 my $DEFAULT_READS = 10;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 120;
-my $DEFAULT_MIN_CLUSTER_READS = 5;
+my $DEFAULT_MIN_CLUSTER_READS = 2;
+my $DEFAULT_MAX_CLUSTER_DIST = 4000;
 
 my $HEADER = qq[#retroseq v:].substr($Utilities::VERSION,0,1);
 my $FOOTER = qq[#END_CANDIDATES];
@@ -275,8 +276,7 @@ sub _findCandidates
     if( keys( %candidates ) > 0 )
     {
         open( my $ffh, qq[>>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
-        open( my $afh, qq[>>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
-        
+
         #now go and get the reads from the bam (annoying have to traverse through the bam a second time - but required for reads where the mate is aligned distantly)
         #also dump out their mates as will need these later as anchors
         open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
@@ -304,7 +304,6 @@ sub _findCandidates
             if( $currentChr ne $ref && $ref ne '*' ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
         }
         close( $ffh );
-        close( $afh );
     }
     undef %candidates; #finished with this hash
     
@@ -349,6 +348,7 @@ sub _findCandidates
     }
     
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
+    #output format: 
     open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die qq[Exonerate failed to run: $!];
     print qq[Parsing alignments....\n];
     my $lastLine;
@@ -364,7 +364,7 @@ sub _findCandidates
         if( $s[ 3 ] >= $id && $s[ 2 ] >= $length )
         {
             $s[ 5 ] =~ /(\d+)_(\d+)/;
-            $anchors{ $s[ 1 ] } = [ $1, $s[ 4 ] ]; #this could be a memory issue (possibly dump out to a file and then use unix join to intersect with the bed)
+            $anchors{ $s[ 1 ] } = [ $1, $s[ 4 ], $s[ 3 ] ]; #TE type, mate orientation, percent ID. This could be a memory issue (possibly dump out to a file and then use unix join to intersect with the bed)
         }
     }
     close( $efh );
@@ -390,7 +390,7 @@ sub _findCandidates
         {
             my $fh = $TE_fh{ $anchors{ $s[ 3 ] }[ 0 ] }; #get the ID of the type the read was aligned to
             my $mate_orientation = $anchors{ $s[ 3 ] }[ 1 ];
-            print $fh qq[$anchor\t$mate_orientation\n];
+            print $fh qq[$anchor\t$mate_orientation\t].$anchors{ $s[ 3 ] }[ 2 ].qq[\n]; #note the anchor orientation is contained is 3rd last, then mate orientation 2nd entry, and then percent id is last
         }
     }
     close( $cfh );
@@ -583,7 +583,14 @@ sub _findInsertions
             #convert to a region BED (removing any candidates with very low numbers of reads)
             print qq[Calling initial rough boundaries of insertions....\n];
             my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
-            Utilities::convertToRegionBED( $sortedCandidatesBED{$currentType}, $DEFAULT_MIN_CLUSTER_READS, $sampleName, $MAX_READ_GAP_IN_REGION, $rawTECalls1 );
+            my $numRegions = Utilities::convertToRegionBedPairs( $sortedCandidatesBED{$currentType}, $DEFAULT_MIN_CLUSTER_READS, $sampleName, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, $rawTECalls1 );
+            
+            if( $numRegions == 0 )
+            {
+                $count ++;
+                unlink( $tempUnsorted, qq[$$.raw_reads.0.$count.tab], qq[$$.raw_calls.1.$count.tab] ) or die qq[Failed to delete temp files\n] if( $clean );
+                next;
+            }
             
             if( defined( $filterBED ) )
             {
@@ -702,15 +709,16 @@ sub _filterCallsBedMinima
         my $flag = $result->[0];
         my $call = $result->[1];
         my $ratio = $result->[2];
-        print qq[Breakpoint score: $ratio Flag: $flag\n];
-
+        
         #decide if its a hom or het call by the depth
         if( $depth <= 10 )
         {
+            print qq[Hom breakpoint score: $ratio Flag: $flag\n];
             print $homsfh $call.qq[\t$flag\n];
         }
         elsif( $hets )
         {
+            print qq[Het breakpoint score: $ratio Flag: $flag\n];
             print $hetsfh $call.qq[\t$flag\n];
         }
 	}
@@ -883,15 +891,17 @@ sub _getCandidateTEReadNames
                $candidates{ $name } = $flag & $$BAMFLAGS{'1st_in_pair'} ? 2 : 1; #mate is recorded
                
                my $pos = $sam[ 3 ];
-               print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\n];
+               my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
+               print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\n];
             }
             #            read is mapped                         mate is mapped                                  not paired correctly
-            elsif( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag & $$BAMFLAGS{'read_paired'} ) && $mref ne '=' )
+            elsif( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag & $$BAMFLAGS{'read_paired'} ) )
             {
                $candidates{ $name } = $flag & $$BAMFLAGS{'1st_in_pair'} ? 2 : 1; #mate is recorded
                
                my $pos = $sam[ 3 ];
-               print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\n];
+               my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
+               print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\n];
             }
         }
         if( $currentChr ne $ref && $ref ne '*' ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}

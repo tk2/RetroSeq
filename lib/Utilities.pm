@@ -174,6 +174,8 @@ sub testBreakPoint
     my $genotypeMode = shift; #0/1 saying whether to operate in genotyping mode (i.e. less stringent criteria)
     
     my @originalCallA = split( /\t/, $originalCall );
+    my $lhsWindow = $refPos - $originalCallA[ 1 ];
+    my $rhsWindow = $originalCallA[ 2 ] - $refPos;
     
     #test to see if lots of rp's either side
     my $lhsFwdBlue = 0; my $lhsRevBlue = 0; my $rhsFwdBlue = 0; my $rhsRevBlue = 0;
@@ -185,7 +187,7 @@ sub testBreakPoint
 	my $cmdpre;
     if( @bams > 1 )
     {
-        if( _mergeRegionBAMs( \@bams, $chr, $refPos-$BREAKPOINT_WINDOW - 500, $refPos+$BREAKPOINT_WINDOW + 500, qq[/tmp/$$.region.bam] ) )
+        if( _mergeRegionBAMs( \@bams, $chr, $refPos-$lhsWindow-400, $refPos+$rhsWindow+400, qq[/tmp/$$.region.bam] ) )
         {
             $cmdpre = qq[samtools view /tmp/$$.region.bam $chr:];
         }else{die qq[Failed to extract region $chr:$refPos BAM];}
@@ -199,7 +201,7 @@ sub testBreakPoint
     
     
 	#also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
-	my $cmd = $cmdpre.($refPos-$BREAKPOINT_WINDOW).qq[-].($refPos+$BREAKPOINT_WINDOW).qq[ | ].(defined($ignoreRGs) ? qq[ grep -v -f $ignoreRGs |] : qq[]);
+	my $cmd = $cmdpre.($refPos-$lhsWindow).qq[-].($refPos+$rhsWindow).qq[ | ].(defined($ignoreRGs) ? qq[ grep -v -f $ignoreRGs |] : qq[]);
 	open( my $tfh, $cmd ) or die $!;
 	while( my $sam = <$tfh> )
 	{
@@ -487,85 +489,191 @@ sub getCandidateBreakPointsDirVote
     return [$maxPos, length($s[4]) ]; #also need to return the size of the window to the two clusters either side of the breakpoint
 }
 
-#convert the individual read calls to calls for putative TE insertion calls
-#output is a BED file and a VCF file of the calls
-sub convertToRegionBED
+#cluster the reads into fwd clusters and rev clusters
+sub convertToRegionBedPairs
 {
-	my $calls = shift;
+    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 6;
+    
+    my $bedIn = shift;
 	my $minReads = shift;
 	my $id = shift;
-	my $max_gap = shift;
+	my $max_intra_gap = shift;
+	my $max_fwd_rev_gap = shift;
 	my $outputbed = shift;
 	
-	open( my $ofh, qq[>$outputbed] ) or die $!;
-	open( my $cfh, $calls ) or die $!;
-	my $lastEntry = undef;
-	my $regionStart = 0;
-	my $regionEnd = 0;
-	my $regionChr = 0;
-	my $reads_in_region = 0;
-	my %startPos; #all of the reads must start from a different position (i.e. strict dup removal)
-	while( <$cfh> )
-	{
-		chomp;
-		my @s = split( /\t/, $_ );
-		if( ! defined $lastEntry )
-		{
-			$regionStart = $s[ 1 ];
-			$regionEnd = $s[ 2 ];
-			$regionChr = $s[ 0 ];
-			$reads_in_region = 1;
-			$startPos{ $s[ 1 ] } = 1;
-		}
-		elsif( $s[ 0 ] ne $regionChr )
-		{
-			#done - call the region
-			my @s1 = split( /\t/, $lastEntry );
-			$regionEnd = $s1[ 2 ];
-			my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
-			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
-			
-			$reads_in_region = 1;
-			$regionStart = $s[ 1 ];
-			$regionEnd = $s[ 2 ];
-			$regionChr = $s[ 0 ];
-			%startPos = ();
-			$startPos{ $s[ 1 ] } = 1;
-		}
-		elsif( $s[ 1 ] - $regionEnd > $max_gap )
-		{
-			#call the region
-			my @s1 = split( /\t/, $lastEntry );
-			$regionEnd = $s1[ 2 ];
-			my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
-			print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
-			
-			$reads_in_region = 1;
-			$regionStart = $s[ 1 ];
-			$regionChr = $s[ 0 ];
-			
-			%startPos = ();
-			$startPos{ $s[ 1 ] } = 1;
-		}
-		else
-		{
-			#read is within the region - increment
-			if( ! defined( $startPos{ $s[ 1 ] } ) )
-			{
-				$reads_in_region ++;
-				$regionEnd = $s[ 2 ];
-				$startPos{ $s[ 1 ] } = 1;
-			}
-		}
-		$lastEntry = $_;
-	}
-	my $size = $regionEnd - $regionStart; $size = 1 unless $size > 0;
+	my %fwdClusters; #{chr} {endpos} = bed
+	my %revClusters; #{chr} {startpos} = bed
 	
-	print $ofh "$regionChr\t$regionStart\t$regionEnd\t$id\t$reads_in_region\n" if( $reads_in_region >= $minReads );
+	#dup removal - uniq fwd start pos, uniq rev end pos
+	my %startPosFwd;
+	my %endPosRev;
+	
+	open( my $cfh, $bedIn ) or die $!;
+	my $regionStartFwd = 0;
+	my $regionEndFwd = 0;
+	my $regionChrFwd = undef;
+	my $reads_in_regionFwd = 0;
+	my $regionStartRev = 0;
+	my $regionEndRev = 0;
+	my $regionChrRev = undef;
+	my $reads_in_regionRev = 0;
+	while( my $line = <$cfh> )
+	{
+	    chomp( $line );
+	    my @s = split( /\t/, $line ); #chr, start, stop, name, orientation, mate orientation
+	    if( $s[ 4 ] eq '+' )
+	    {
+	        if( ! defined $regionChrFwd )
+            {
+                $regionStartFwd = $s[ 1 ];
+                $regionEndFwd = $s[ 2 ];
+                $regionChrFwd = $s[ 0 ];
+                $reads_in_regionFwd = 1;
+                $startPosFwd{ $s[ 1 ] } = 1;
+            }
+            elsif( $s[ 0 ] ne $regionChrFwd ) #new chr
+            {
+                #done - call the region
+                my $size = $regionEndFwd - $regionStartFwd; $size = 1 unless $size > 0;
+                $fwdClusters{ $regionChrFwd }{ $regionEndFwd } = [ $regionChrFwd, $regionStartFwd, $regionEndFwd, $reads_in_regionFwd ] if( $reads_in_regionFwd >= $minReads );
+                
+                $reads_in_regionFwd = 1;
+                $regionStartFwd = $s[ 1 ];
+                $regionEndFwd = $s[ 2 ];
+                $regionChrFwd = $s[ 0 ];
+                %startPosFwd = ();
+                $startPosFwd{ $s[ 1 ] } = 1;
+            }
+            elsif( $s[ 1 ] - $regionEndFwd > $max_intra_gap )
+            {
+                #call the region
+print "POS $regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t$reads_in_regionFwd\n";# if( $reads_in_regionFwd >= $minReads );
+                $fwdClusters{ $regionChrFwd }{ $regionEndFwd } = [ $regionChrFwd, $regionStartFwd, $regionEndFwd, $reads_in_regionFwd ] if( $reads_in_regionFwd >= $minReads );
+                
+                $reads_in_regionFwd = 1;
+                $regionStartFwd = $s[ 1 ];
+                $regionChrFwd = $s[ 0 ];
+                $regionEndFwd = $s[ 2 ];
+                
+                %startPosFwd = ();
+                $startPosFwd{ $s[ 1 ] } = 1;
+            }
+            else
+            {
+                #read is within the region - increment
+                if( ! defined( $startPosFwd{ $s[ 1 ] } ) )
+                {
+                    $reads_in_regionFwd ++;
+                    $regionEndFwd = $s[ 2 ];
+                    $startPosFwd{ $s[ 1 ] } = 1;
+                }
+            }
+	    }else
+	    {
+	        if( ! defined $regionChrRev )
+            {
+                $regionStartRev = $s[ 1 ];
+                $regionEndRev = $s[ 2 ];
+                $regionChrRev = $s[ 0 ];
+                $reads_in_regionRev = 1;
+                $endPosRev{ $s[ 2 ] } = 1;
+            }
+            elsif( $s[ 0 ] ne $regionChrRev ) #on next chr
+            {
+                #done - call the region
+                $revClusters{ $regionChrRev }{ $regionStartRev } = [ $regionChrRev, $regionStartRev, $regionEndRev, $reads_in_regionRev ] if( $reads_in_regionRev >= $minReads );
+                
+                $reads_in_regionRev = 1;
+                $regionStartRev = $s[ 1 ];
+                $regionEndRev = $s[ 2 ];
+                $regionChrRev = $s[ 0 ];
+                %endPosRev = ();
+                $endPosRev{ $s[ 2 ] } = 1;
+            }
+            elsif( $s[ 1 ] - $regionEndRev > $max_intra_gap )
+            {
+                #call the region
+print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionRev\n" if( $reads_in_regionRev >= $minReads );
+                $revClusters{ $regionChrRev }{ $regionStartRev } = [ $regionChrRev, $regionStartRev, $regionEndRev, $reads_in_regionRev ] if( $reads_in_regionRev >= $minReads );
+
+                $reads_in_regionRev = 1;
+                $regionStartRev = $s[ 1 ];
+                $regionEndRev = $s[ 2 ];
+                $regionChrRev = $s[ 0 ];
+                
+                %endPosRev = ();
+                $endPosRev{ $s[ 1 ] } = 1;
+            }
+            else
+            {
+                #read is within the region - increment
+                if( ! defined( $endPosRev{ $s[ 2 ] } ) )
+                {
+                    $reads_in_regionRev ++;
+                    $regionEndRev = $s[ 2 ];
+                    $endPosRev{ $s[ 2 ] } = 1;
+                }
+            }
+	    }
+
+	}
+	print "POS $regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t$reads_in_regionFwd\n";# if( $reads_in_regionFwd >= $minReads );
+    $fwdClusters{ $regionChrFwd }{ $regionEndFwd } = [ $regionChrFwd, $regionStartFwd, $regionEndFwd, $reads_in_regionFwd ] if( $reads_in_regionFwd >= $minReads );
+	print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionRev\n" if( $reads_in_regionRev >= $minReads );
+    $revClusters{ $regionChrRev }{ $regionStartRev } = [ $regionChrRev, $regionStartRev, $regionEndRev, $reads_in_regionRev ] if( $reads_in_regionRev >= $minReads );
+    
 	close( $cfh );
+	
+	if( ! %fwdClusters || ! %revClusters ){return 0;}
+	
+	my $regionsCalled = 0;
+	#now pair up the clusters by closest end/start positions
+	open( my $ofh, qq[>$outputbed] ) or die $!;
+	foreach my $fwdChr( keys( %fwdClusters ) )
+	{
+#print qq[Calling $fwdChr\n];
+	    my %fwdChrClusters = %{$fwdClusters{$fwdChr}};
+	    my %revChrClusters = %{$revClusters{$fwdChr}};
+	    
+	    my @revStartPositions = sort( {$a<=>$b} keys( %{$revClusters{$fwdChr}} ) );
+	    my $revStartPositionsIndex = 0;
+	    my @fwdEndPositions = sort( {$a<=>$b} keys( %fwdChrClusters ) );
+	    my $fwdEndPositionsIndex = 0;
+	    while( $revStartPositionsIndex < @revStartPositions && $fwdEndPositionsIndex < @fwdEndPositions )
+	    {
+print qq[$fwdEndPositions[ $fwdEndPositionsIndex ] $fwdEndPositionsIndex $revStartPositions[ $revStartPositionsIndex ] $revStartPositionsIndex\n];
+print abs( $revStartPositions[ $revStartPositionsIndex ] - $fwdEndPositions[ $fwdEndPositionsIndex ] ).qq[\n];
+	        if( abs( $revStartPositions[ $revStartPositionsIndex ] - $fwdEndPositions[ $fwdEndPositionsIndex ] ) < $max_fwd_rev_gap )
+	        {
+	            #check the overlap <50% - i.e. -> <- for most reads
+	            #                        fwd start lt rev start
+print $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].qq[<].$revStartPositions[ $revStartPositionsIndex ].qq[\t].$fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].qq[<].$revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ].qq[\n];
+	            if( $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ] < $revStartPositions[ $revStartPositionsIndex ] && $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ] < $revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ] )
+	            {
+	                my $reads = $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 3 ] + $revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 3 ];
+	                if( $reads >= $minReads * 3 )
+	                {
+	                    $regionsCalled ++;
+                        print $ofh qq[$fwdChr\t].$fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].qq[\t].$revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ].qq[\t$id\t$reads\n];
+                        print qq[CLUSTER $fwdChr\t].$fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].qq[\t].$revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ].qq[\t$id\t$reads\n];
+                    }
+                    $revStartPositionsIndex ++;
+                    $fwdEndPositionsIndex ++;
+	                next;
+	            }
+	        }
+	        
+	        if( $revStartPositions[ $revStartPositionsIndex ] - $fwdEndPositions[ $fwdEndPositionsIndex ] > $max_fwd_rev_gap )
+	        {
+	            $fwdEndPositionsIndex ++;
+	        }
+	        else{$revStartPositionsIndex ++;}
+	    }
+	}
+	
 	close( $ofh );
 	
-	return 1;
+	return $regionsCalled;
 }
 
 sub annotateCallsBED
