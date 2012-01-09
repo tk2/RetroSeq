@@ -36,7 +36,10 @@ my $DEFAULT_READS = 10;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 120;
 my $DEFAULT_MIN_CLUSTER_READS = 2;
+my $DEFAULT_SR_MIN_CLUSTER_READS = 2;
 my $DEFAULT_MAX_CLUSTER_DIST = 4000;
+my $DEFAULT_MAX_SR_CLUSTER_DIST = 30;
+my $DEFAULT_MIN_SOFT_CLIP = 30;
 
 my $HEADER = qq[#retroseq v:].substr($Utilities::VERSION,0,1);
 my $FOOTER = qq[#END_CANDIDATES];
@@ -56,7 +59,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $srmode, $minSoftClip, $srOutputFile, $srInputFile, $help);
 
 GetOptions
 (
@@ -84,7 +87,11 @@ GetOptions
     'hets'          =>  \$heterozygous,
     'filter=s'      =>  \$filterFile,
     'orientate=s'   =>  \$orientate,
-    'ignoreRGs=s'     =>  \$ignoreRGsFofn,
+    'ignoreRGs=s'   =>  \$ignoreRGsFofn,
+    'srmode'        =>  \$srmode,
+    'minclip=i'     =>  \$minSoftClip,
+    'srcands=s'     =>  \$srOutputFile,
+    'srInput=s'     =>  \$srInputFile,
     'h|help'        =>  \$help,
 );
 
@@ -112,11 +119,13 @@ USAGE
 if( $discover )
 {
     ( $bam && $eRefFofn && $output ) or die <<USAGE;
-Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-id <int>] [-len <int> -noclean]
+Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q <int>] [-id <int>] [-len <int> -noclean]
     
     -bam        BAM file of paired reads mapped to reference genome
     -eref       Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta)
     -output     Output file to store candidate supporting reads (required for calling step)
+    [-srmode]   Search for split reads in the BAM file
+    [-minclip]  Minimum length of soft clippped portion of read to be considered for split-read analysis. Default is 30bp.
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
     [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
     [-id        Minimum percent ID for a match of a read to the transposon references. Default is 90.]
@@ -139,6 +148,8 @@ USAGE
     $length = defined( $length ) && $length > 25 ? $length : $DEFAULT_LENGTH;
     my $clean = defined( $noclean ) ? 0 : 1;
     
+    if( $srmode ){ if( ! $srOutputFile ){die qq[You must specify the -srcands output file parameter in split-read mode\n];}if( ! $minSoftClip ){$minSoftClip = $DEFAULT_MIN_SOFT_CLIP;}}else{undef($minSoftClip);}
+    
     if( $readgroups && length( $readgroups ) > 0 )
     {
         my @s = split( /,/, $readgroups );foreach my $rg ( @s ){if( $rg !~ /[A-Za-z0-9]|\.|-|_+/ ){croak qq[Invalid readgroup: $rg\n];}}
@@ -151,17 +162,18 @@ USAGE
     Utilities::checkBinary( q[samtools], qq[0.1.16] );
     Utilities::checkBinary( q[exonerate], qq[2.2.0] );
     
-    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $clean );
+    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $minSoftClip, $srOutputFile, $clean );
 }
 elsif( $call )
 {
     ( $bam && $input && $ref && $output ) or die <<USAGE;
-Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-filter <BED file> -cleanup -reads <int> -depth <int> -hets]
+Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-srinput <SR candidates file> -filter <BED file> -cleanup -reads <int> -depth <int> -hets]
     
     -bam            BAM file OR BAM fofn
-    -input          Either a single output file from the discover stage OR a prefix of a set of files from discovery to be combined for calling OR a fofn of discovery stage output files
+    -input          Either a single output file from the PE discover stage OR a prefix of a set of files from discovery to be combined for calling OR a fofn of discovery stage output files
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
+    [-srinput       Either a single output from split-read discovery stage OR a prefix of a set of files to be combined for calling (will trigger split-read calling to run)]
     [-hets          Call heterozygous insertions. Default is homozygous.]
     [-orientate     Attempt to predicate the orientation of the calls. Default is no.]
     [-filter        BED file of regions to exclude from final calls e.g. reference elements, low complexity etc.]
@@ -201,7 +213,42 @@ USAGE
     Utilities::checkBinary( q[samtools], qq[0.1.16] );
     Utilities::checkBinary( q[bcftools] );
     
-    _findInsertions( $bam, $input, $ref, $output, $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn );
+    my @bams;
+    my $first = `head -1 $bam`;chomp( $first );
+    if( -f $first ) #is this a fofn
+    {
+        open( my $ifh, $bam ) or die qq[failed to BAM fofn: $input\n];
+        while(my $file = <$ifh> )
+        {
+            chomp( $file );
+            if( -f $file && -f $file.qq[.bai] ){push(@bams, $file);}else{die qq[Cant find BAM input file or BAM index file: $file\n];}
+        }
+        print qq[Found ].scalar(@bams).qq[ BAM files\n\n];
+        close( $ifh );
+    }
+    else{if( -f $bam && -f $bam.qq[.bai] ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
+    
+    my $sampleName = Utilities::getBAMSampleName( \@bams );
+    print qq[Calling sample $sampleName\n];
+    
+    #what sort of calling to run - PE and/or SR
+    if( $srInputFile )
+    {
+        print qq[Beginning split-read calling...\n];
+        _findInsertionsSR( $sampleName, $srInputFile, $ref, $output.qq[.SR], $reads, $depth, $region, $clean, $heterozygous );
+        
+        print qq[Beginning paired-end calling...\n];
+        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE], $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn );
+        
+        #now merge the VCF files into a single VCF
+        #implement later..
+    }
+    else
+    {
+        print qq[Beginning paired-end calling...\n];
+        _findInsertions( \@bams, $sampleName, $input, $ref, $output, $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn );
+    }
+	exit;
 }
 elsif( $genotype )
 {
@@ -254,6 +301,8 @@ sub _findCandidates
     my $minAnchor = shift;
     my $output = shift;
     my $readgroups = shift;
+    my $minSoftClip = shift;
+    my $srOutput = shift;
     my $clean = shift;
     
     #test for exonerate
@@ -269,7 +318,8 @@ sub _findCandidates
     
     my $candidatesFasta = qq[$$.candidates.fasta];
     my $candidatesBed = qq[$$.candidate_anchors.bed];
-    my %candidates = %{ _getCandidateTEReadNames($bam, $readgroups, undef, undef, undef, $minAnchor, $candidatesFasta, $candidatesBed ) };
+    my $clipFasta = qq[$$.clip_candidates.fasta];
+    my %candidates = %{ _getCandidateTEReadNames($bam, $readgroups, $minAnchor, $minSoftClip, $candidatesFasta, $candidatesBed, $clipFasta ) };
     
     print scalar( keys( %candidates ) ).qq[ candidate reads remain to be found after first pass....\n];
     
@@ -308,22 +358,18 @@ sub _findCandidates
     undef %candidates; #finished with this hash
     
     #create a single fasta file with all the TE ref seqs
-    my %refLabels;
-    my $counter = 1;
     my $refsFasta = qq[$$.allrefs.fasta];
     open( my $tfh, qq[>$refsFasta] ) or die $!;
     foreach my $type ( keys( %{ $erefs } ) )
     {
         open( my $sfh, $$erefs{ $type } ) or die $!;
         my $seqCount = 1;
-        $refLabels{ $type } = $counter;
         while( my $line = <$sfh>)
         {
             chomp( $line );
             if( $line =~ /^>/ )
             {
-                print $tfh qq[>$counter\_$seqCount\n];
-                $seqCount ++;
+                print $tfh qq[>$type\n]; #call them all by the type label
             }
             else
             {
@@ -331,7 +377,6 @@ sub _findCandidates
             }
         }
         close( $sfh );
-        $counter ++;
     }
     close( $tfh );
     
@@ -348,9 +393,9 @@ sub _findCandidates
     }
     
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
-    #output format: 
+    #output format:                                                    read hitlen %id +/- refName
     open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die qq[Exonerate failed to run: $!];
-    print qq[Parsing alignments....\n];
+    print qq[Parsing PE alignments....\n];
     my $lastLine;
     my %anchors;
     while( my $hit = <$efh> )
@@ -363,24 +408,15 @@ sub _findCandidates
         #    check min identity	  check min length
         if( $s[ 3 ] >= $id && $s[ 2 ] >= $length )
         {
-            $s[ 5 ] =~ /(\d+)_(\d+)/;
-            $anchors{ $s[ 1 ] } = [ $1, $s[ 4 ], $s[ 3 ] ]; #TE type, mate orientation, percent ID. This could be a memory issue (possibly dump out to a file and then use unix join to intersect with the bed)
+            $anchors{ $s[ 1 ] } = [ $s[ 5 ], $s[ 4 ], $s[ 3 ] ]; #TE type, mate orientation, percent ID. This could be a memory issue (possibly dump out to a file and then use unix join to intersect with the bed)
         }
     }
     close( $efh );
     
     if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[Alignment did not complete correctly\n];}
     
-    #setup filehandles for the various TE types
-    my %TE_fh;
-    foreach my $type ( keys( %{ $erefs } ) )
-    {
-        my $id = $refLabels{ $type };
-        open( my $tfh, qq[>$$.$id.candidates] ) or die $!;
-        $TE_fh{ $refLabels{ $type } } = $tfh; #keys are the IDs of the types
-    }
-    
-    #now run through the anchors file and pull out the locations of the anchors
+    #now put all the anchors together into a single file per type
+    open( my $afh, qq[>$output] ) or die $!;
     open( my $cfh, qq[$$.candidate_anchors.bed] ) or die $!;
     while( my $anchor = <$cfh> )
     {
@@ -388,45 +424,75 @@ sub _findCandidates
         my @s = split( /\t/, $anchor );
         if( defined( $anchors{ $s[ 3 ] } ) )
         {
-            my $fh = $TE_fh{ $anchors{ $s[ 3 ] }[ 0 ] }; #get the ID of the type the read was aligned to
             my $mate_orientation = $anchors{ $s[ 3 ] }[ 1 ];
-            print $fh qq[$anchor\t$mate_orientation\t].$anchors{ $s[ 3 ] }[ 2 ].qq[\n]; #note the anchor orientation is contained is 3rd last, then mate orientation 2nd entry, and then percent id is last
+            my $type = $anchors{ $s[ 3 ] }[ 0 ];
+            #note the anchor orientation is contained is 3rd last, then mate orientation 2nd entry, and then percent id is last
+            print $afh qq[$s[0]\t$s[1]\t$s[2]\t$type\t$s[3]\t$s[4]\t$mate_orientation\t].$anchors{ $s[ 3 ] }[ 2 ].qq[\n];
         }
-    }
-    close( $cfh );
-    
-    foreach my $type ( keys( %TE_fh ) )
-    {
-        close( $TE_fh{ $type } );
-    }
-    
-    #now put all the anchors together into a single file per type
-    open( my $afh, qq[>$output] ) or die $!;
-	print $afh qq[$HEADER\n];
-    foreach my $type ( keys( %{ $erefs } ) )
-    {
-        my $id = $refLabels{ $type };
-        open( my $tfh, qq[$$.$id.candidates] ) or die $!;
-        print $afh qq[TE_TYPE_START $type\n];
-        while( my $line = <$tfh> )
+        else
         {
-            print $afh qq[$line];
+            print $afh qq[$s[0]\t$s[1]\t$s[2]\tunknown\t$s[3]\t$s[4]\n];
         }
-        print $afh qq[TE_TYPE_END $type\n];
     }
-    print $afh qq[$FOOTER\n]; #write an end of file marker
-	close( $afh );
-	
-	if( $clean )
-	{
-	    #delete the intermediate files
-	    unlink( glob( qq[$$.*] ) ) or die qq[Failed to remove intermediate files: $!];
-	}
+    close( $afh );close( $cfh );
+    undef( %anchors );
+    
+    #if running split-read mode, then run exonerate on these sequences too
+    if( $srmode && -s $clipFasta )
+    {
+        open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $clipFasta $refsFasta | egrep "^INFO|completed" | uniq | ] ) or die qq[Exonerate failed to run: $!];
+        print qq[Parsing split-read alignments....\n];
+        open( my $cofh, qq[>$srOutput] ) or die qq[Failed to create clipped candidates output file: $!\n];
+        $lastLine = '';
+        my %readsAligned;
+        while( my $hit = <$efh> )
+        {
+            chomp( $hit );
+            $lastLine = $hit;
+            last if ( $hit =~ /^-- completed/ );
+            
+            my @s = split( /\s+/, $hit );
+            #    check min identity	  check min length
+            if( $s[ 3 ] >= $id && $s[ 2 ] >= $length )
+            {
+                #get the readname
+                my @readDetails = split( /###/, $s[ 1 ] );
+                
+                #               chr                pos              pos          TE     readname            flag             cigar        align_strand  insertSize
+                my $print = qq[$readDetails[1]\t$readDetails[2]\t$readDetails[2]\t$s[5]\t$readDetails[0]\t$readDetails[3]\t$readDetails[4]\t$s[4]\t$s[3]\t$readDetails[5]\n];
+                if( $print ne $lastLine )
+                {
+                    print $cofh $print;
+                }
+                $readsAligned{ $readDetails[ 0 ] } = 1;
+                $lastLine = $print;
+            }
+        }
+        close( $efh );
+        
+        #now get all the reads that didnt align to a TE and annotate them as unknown type
+        open( my $tfh, $clipFasta )  or die $!;
+        while( my $l = <$tfh> )
+        {
+            next unless $l =~ /^>/;
+            $l = substr( $l, 1 );
+            my @readDetails = split( /###/, $l );
+            if( ! $readsAligned{ $readDetails[ 0 ] } )
+            {
+                my $print = qq[$readDetails[1]\t$readDetails[2]\t$readDetails[2]\tunknown\t$readDetails[0]\t$readDetails[3]\t$readDetails[4]\n];
+                print $cofh $print;
+            }
+        }
+        close( $cofh );
+        
+        if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[SR alignment did not complete correctly\n];}
+    }
 }
 
 sub _findInsertions
 {
-    my $bam = shift;
+    my $bamsRef = shift;my @bams = @{$bamsRef};
+    my $sampleName = shift;
     my $input = shift;
     my $ref = shift;
     my $output = shift;
@@ -452,7 +518,7 @@ sub _findInsertions
                 chomp( $file );
                 if( -f $file ){push(@files, $file);}else{die qq[Cant find discovery output file: $file\n];}
             }
-            print qq[Found ].scalar(@files).qq[ discovery stage input files\n\n];
+            print qq[Found ].scalar(@files).qq[ PE discovery stage input files\n\n];
             close( $ifh );
         }else{push( @files, $input );}#looks like a discovery output file
     }
@@ -462,42 +528,13 @@ sub _findInsertions
         die qq[Cant find any inputs files with prefix $input*\n] if( ! @files || @files == 0 );
     }
     
-    my @bams;
-    my $first = `head -1 $bam`;chomp( $first );
-    if( -f $first ) #is this a fofn
+    #merge the SR discovery files together and sort them by type, chr, position cols
+    foreach my $file( @files )
     {
-        open( my $ifh, $bam ) or die qq[failed to BAM fofn: $input\n];
-        while(my $file = <$ifh> )
-        {
-            chomp( $file );
-            if( -f $file && -f $file.qq[.bai] ){push(@bams, $file);}else{die qq[Cant find BAM input file or BAM index file: $file\n];}
-        }
-        print qq[Found ].scalar(@bams).qq[ BAM files\n\n];
-        close( $ifh );
+        system(qq[cat $file >> $$.merge.PE.tab]) == 0 or die qq[Failed to merge SR input files\n];
     }
-    else{if( -f $bam && -f $bam.qq[.bai] ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
     
-    my $input_;
-    if( @files && @files > 0 )
-    {
-        if( @files == 1 )  #single input file in the fofn
-        {
-            $input_ = $files[ 0 ];
-            _checkDiscoveryOutput( $input_ );
-        }
-        else #multiple input files so merge
-        {
-            $input_ = qq[$$.merged.discovery];
-            _mergeDiscoveryOutputs( \@files, $input_ );
-        }
-    }
-    else
-    {
-        #check the eof markers are there from the discovery stage
-        print qq[Found 1 input file: $input\n];
-        _checkDiscoveryOutput( $input );
-        $input_ = $input;
-    }
+    system( qq[sort -k4,4d -k1,1d -k2,2n $$.merge.PE.tab | uniq > $$.merge.PE.sorted.tab] ) == 0 or die qq[Failed to sort merged SR input files\n];
     
     my $ignoreRGsFormatted = undef;
     if( $ignoreRGs )
@@ -518,9 +555,6 @@ sub _findInsertions
         close( $tfh );
     }
     
-    my $sampleName = Utilities::getBAMSampleName( \@bams );
-    print qq[Calling sample $sampleName\n];
-    
     #parse the region
     my ($chr, $start, $end) = (undef, undef, undef);
     if( defined( $region ) )
@@ -533,82 +567,62 @@ sub _findInsertions
         else{$chr = $region;print qq[Restricting calling to Chr: $chr\n];}
     }
     
-    #for each type in the file - call the insertions
-    open( my $ifh, $input_ ) or die $!;
-    my $currentType = '';
-    my $count = 0;
-    my $tempUnsorted = qq[$$.reads.0.$count.tab]; #a temporary file to dump out the reads for this TE type
+    open( my $tfh, qq[$$.merge.PE.sorted.tab] ) or die qq[Failed to open merged tab file: $!\n];
     my %typeBEDFiles;
-    my $tfh;
+    my $currentType = '';
+    my $cfh;
+    my $readCount = 0;
     my $raw_candidates = qq[$output.candidates];
     open( my $dfh, qq[>$raw_candidates] ) or die $!;
     print $dfh qq[FILTER: chr\tstart\tend\ttype\_sample\tL_Fwd_both\tL_Rev_both\tL_Fwd_single\tL_Rev_single\tR_Fwd_both\tR_Rev_both\tR_Fwd_single\tR_Rev_single\tL_Last_both\tR_First_both\tDist\n];
     close( $dfh );
-    my %sortedCandidatesBED;
-    while(1)
+    while( my $line = <$tfh> )
     {
-        my $line = <$ifh>;
-        last unless defined( $line );
         chomp( $line );
-        
-        next if( $line =~ /^#/ );
-        if( $line =~ /^(TE_TYPE_START)(\s+)(.+)$/ )
+        my @s = split( /\t/, $line );
+        if( $currentType eq '' )
         {
-            $currentType = $3;
-            $tempUnsorted = qq[$$.reads.0.$count.tab];
-            open( $tfh, qq[>$tempUnsorted] ) or die $!;
+            $currentType = $s[ 3 ];
+            print qq[PE Call: $currentType\n];
+            open( $cfh, qq[>$$.$currentType.pe_anchors.bed] ) or die $!;
         }
-        elsif( $line =~ /^TE_TYPE_END/ )
+        elsif( $currentType ne $s[ 3 ] || eof( $tfh ) )
         {
-            close( $tfh );
-            print qq[Calling TE type: $currentType $count\n];
-            if( defined( $chr ) )
-            {
-                if( defined( $start ) && defined( $end ) )
-                {
-                    #filter the BED file by the chromosome only
-                    _filterBED( $tempUnsorted, $chr, $start, $end );
-                }
-                else
-                {
-                    #filter the BED file by the chromosome only
-                    _filterBED( $tempUnsorted, $chr );
-                }
-            }
-            
-            #call the insertions
-            $sortedCandidatesBED{$currentType} = qq[$$.raw_reads.0.$count.tab];
-            _sortBED( $tempUnsorted, $sortedCandidatesBED{$currentType} );
+            close( $cfh );
             
             #convert to a region BED (removing any candidates with very low numbers of reads)
-            print qq[Calling initial rough boundaries of insertions....\n];
-            my $rawTECalls1 = qq[$$.raw_calls.1.$count.tab];
-            my $numRegions = Utilities::convertToRegionBedPairs( $sortedCandidatesBED{$currentType}, $DEFAULT_MIN_CLUSTER_READS, $sampleName, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, $rawTECalls1 );
+            print qq[$currentType Calling initial rough boundaries of insertions....\n];
+            my $rawTECalls1 = qq[$$.raw_calls.1.$currentType.tab];
+            my $numRegions = Utilities::convertToRegionBedPairs( qq[$$.$currentType.pe_anchors.bed], $DEFAULT_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, 1, 0, $rawTECalls1 );
             
             if( $numRegions == 0 )
             {
-                $count ++;
-                unlink( $tempUnsorted, qq[$$.raw_reads.0.$count.tab], qq[$$.raw_calls.1.$count.tab] ) or die qq[Failed to delete temp files\n] if( $clean );
+                unlink( qq[$$.$currentType.pe_anchors.bed], $rawTECalls1 ) or die qq[Failed to delete temp files\n] if( $clean );
+                
+                $readCount = 0;
+                $currentType = $s[ 3 ];
+                print qq[PE Call: $currentType\n];
+                open( $cfh, qq[>$$.$currentType.pe_anchors.bed] ) or die $!;
                 next;
             }
             
             if( defined( $filterBED ) )
             {
                 #remove the regions specified in the exclusion BED file
-                my $filtered = qq[$$.raw_calls.1.filtered.$count.tab];
+                my $filtered = qq[$$.raw_calls.1.filtered.$currentType.tab];
                 Utilities::filterOutRegions( $rawTECalls1, $filterBED, $filtered );
                 $rawTECalls1 = $filtered;
             }
             
             #remove extreme depth calls
             print qq[Removing calls with extremely high depth (>$depth)....\n];
-            my $rawTECalls2 = qq[$$.raw_calls.2.$count.tab];
+            my $rawTECalls2 = qq[$$.raw_calls.2.$currentType.tab];
             _removeExtremeDepthCalls( $rawTECalls1, \@bams, $depth, $rawTECalls2, $raw_candidates );
             
             #new calling filtering code
             print qq[Filtering and refining candidate regions into calls....\n];
-            my $homCalls = qq[$$.raw_calls.3.$count.hom.bed];
-            my $hetCalls = qq[$$.raw_calls.3.$count.het.bed];
+            my $homCalls = qq[$$.raw_calls.3.$currentType.hom.bed];
+            my $hetCalls = qq[$$.raw_calls.3.$currentType.het.bed];
             _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
             
             $typeBEDFiles{ $currentType }{hom} = $homCalls if( -f $homCalls && -s $homCalls > 0 );
@@ -617,41 +631,146 @@ sub _findInsertions
             #remove the temporary files for this 
             if( $clean )
             {
-                unlink( $tempUnsorted, qq[$$.raw_reads.0.$count.tab], qq[$$.raw_calls.1.$count.tab], qq[$$.raw_calls.2.$count.tab] ) or die qq[Failed to delete temp files\n];
+                unlink( qq[$$.raw_reads.0.$currentType.tab], qq[$$.raw_calls.1.$currentType.tab], qq[$$.raw_calls.2.$currentType.tab] ) or die qq[Failed to delete temp files\n];
                 unlink( $homCalls ) if( -f $homCalls && -s $homCalls == 0 );
                 unlink( $hetCalls ) if ( -f $hetCalls && -s $hetCalls == 0 );
             }
-            $count ++;
+            
+            last if( eof( $tfh ) );
+            
+            $readCount = 0;
+            $currentType = $s[ 3 ];
+            print qq[PE Call: $currentType\n];
+            open( $cfh, qq[>$$.$currentType.pe_anchors.bed] ) or die $!;
         }
         else
         {
-            print $tfh qq[$line\n];
+            #             chr    start  stop   TE_type   a_orien  m_orien %id
+            print $cfh qq[$s[0]\t$s[1]\t$s[2]\t$currentType\t$s[5]\n];
+            $readCount ++;
         }
     }
+    close( $tfh );
+    close( $cfh );
     
-    if( $orientate )
-    {
-        #add predicted orientation for the calls
-        print qq[Orientating calls...\n];
-        foreach my $type ( keys( %typeBEDFiles ) )
-        {
-            if( $typeBEDFiles{ $type }{hom} && -f $typeBEDFiles{ $type }{hom} )
-            {
-                Utilities::annotateCallsBED( $typeBEDFiles{ $type }{hom}, $sortedCandidatesBED{$type} );
-            }
-            
-            if( $hets && $typeBEDFiles{ $type }{het} && -f $typeBEDFiles{ $type }{het} )
-            {
-                Utilities::annotateCallsBED( $typeBEDFiles{ $type }{het}, $sortedCandidatesBED{$type} );
-            }
-        }
-    }
-    
+    #make a VCF file with the calls
+    _outputCalls( \%typeBEDFiles, $sampleName, $ref, $output );
+	
     #output calls in VCF and BED format
     print qq[Creating VCF file of calls....\n];
     _outputCalls( \%typeBEDFiles, $sampleName, $ref, $output );
     
 	if( $clean )
+	{
+	    #delete the intermediate files
+	    unlink( glob( qq[$$.*] ) ) or die qq[Failed to remove intermediate files: $!];
+	}
+}
+
+sub _findInsertionsSR
+{
+    my $sample = shift;
+    my $input = shift;
+    my $ref = shift;
+    my $output = shift;
+    my $minReads = shift;
+    my $depth = shift;
+    my $region = shift;
+    my $clean = shift;
+    my $hets = shift;
+    
+    my @files;
+    if( -f $input )
+    {
+        my $first = `head -1 $input`;chomp( $first );
+        if( -f $first ) #is this a fofn
+        {
+            open( my $ifh, $input ) or die qq[failed to open fofn of SR discovery output files: $input\n];
+            while(my $file = <$ifh> )
+            {
+                chomp( $file );
+                if( -f $file ){push(@files, $file);}else{die qq[Cant find discovery output file: $file\n];}
+            }
+            print qq[Found ].scalar(@files).qq[ SR discovery stage input files\n\n];
+            close( $ifh );
+        }else{push( @files, $input );}#looks like a discovery output file
+    }
+    else
+    {
+        @files = glob( qq[$input*] ) or die qq[Failed to glob files: $input*\n];
+        die qq[Cant find any inputs files with prefix $input*\n] if( ! @files || @files == 0 );
+    }
+    
+    #merge the SR discovery files together and sort them by type, chr, position cols
+    foreach my $file( @files )
+    {
+        system(qq[cat $file >> $$.merge.SR.tab]) == 0 or die qq[Failed to merge SR input files\n];
+    }
+    
+    system( qq[sort -k4,4d -k1,1d -k2,2n $$.merge.SR.tab | uniq > $$.merge.SR.sorted.tab] ) == 0 or die qq[Failed to sort merged SR input files\n];
+    
+    #grab the reads that didnt match any TE into a separate file (to use as evidence when calling individual elements)
+    system( qq[awk -F"\t" '{if(\$4=="unknown" ){if(and(\$6,0x0010)){print \$1"\t"\$2"\t"\$3"\t"\$4"\t-"}else{print \$1"\t"\$2"\t"\$3"\t"\$4"\t+"}}}' $$.merge.SR.sorted.tab | uniq > $$.merge.SR.unknown.tab] ) == 0 or die qq[Failed to extract unknown SR reads\n];
+    
+    open( my $tfh, qq[$$.merge.SR.sorted.tab] ) or die qq[Failed to open merged tab file: $!\n];
+    my %typeBEDFiles;
+    my $currentType = '';
+    my $cfh;
+    my $readCount = 0;
+    my %currentReads;
+    while( my $line = <$tfh> )
+    {
+        my @s = split( /\t/, $line );#print qq[$line\n];
+        if( $currentType eq '' )
+        {
+            $currentType = $s[ 3 ];
+            print qq[SR Call: $currentType\n];
+            open( $cfh, qq[>$$.$currentType.sr_anchors.bed] ) or die $!;
+        }
+        elsif( $currentType ne $s[ 3 ] || eof( $tfh ) )
+        {
+            close( $cfh );
+            
+            #resort the bed file by pos
+            system( qq[sort -k1,1d -k2,2n $$.$currentType.sr_anchors.bed $$.merge.SR.unknown.tab > $$.$currentType.sr_anchors.sorted.bed] ) == 0 or die qq[Sort failed on $currentType\n];
+            
+            #call the regions
+            if( $readCount > 0 && Utilities::convertToRegionBedPairs( qq[$$.$currentType.sr_anchors.sorted.bed], $DEFAULT_SR_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_SR_CLUSTER_DIST, 0, 1, qq[$$.$currentType.sr_calls.bed] ) > 0 )
+            {
+                $typeBEDFiles{ $currentType }{hom} = qq[$$.$currentType.sr_calls.bed];
+                #unlink( qq[$$.$currentType.sr_anchors.bed], qq[$$.$currentType.sr_anchors.sorted.bed] );
+            }else{unlink( qq[$$.$currentType.sr_anchors.bed], qq[$$.$currentType.sr_anchors.sorted.bed] );}
+            
+            last if( eof( $tfh ) );
+            
+            %currentReads = ();
+            $readCount = 0;
+            $currentType = $s[ 3 ];
+            open( $cfh, qq[>$$.$currentType.sr_anchors.bed] ) or die $!;
+        }
+        elsif( ! $currentReads{ $s[4] } )
+        {
+            #check it is paired correctly
+            if( ( $s[ 5 ] & $$BAMFLAGS{'read_paired'}) )
+            {
+                my $orientation = ($s[ 5 ] & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
+                
+                #get the actual breakpoint from the cigar string, flag, and position field
+                my $breakpoint = Utilities::calculateCigarBreakpoint( $s[ 1 ], $s[ 6 ] );
+                
+                print $cfh qq[$s[0]\t$breakpoint\t$breakpoint\t$currentType\t$orientation\n];
+                $readCount ++;
+                $currentReads{ $s[4] } = 1;
+            }
+        }
+    }
+    close( $tfh );
+    close( $cfh );
+    
+    #make a VCF file with the calls
+    _outputCalls( \%typeBEDFiles, $sample, $ref, $output );
+    
+    if( $clean )
 	{
 	    #delete the intermediate files
 	    unlink( glob( qq[$$.*] ) ) or die qq[Failed to remove intermediate files: $!];
@@ -842,16 +961,20 @@ sub _getCandidateTEReadNames
 {
     my $bam = shift;
     my $readgroups = shift;
-    my $chr = shift;
-    my $start = shift;
-    my $end = shift;
     my $minAnchor = shift;
+    my $minSoftClip = shift;
     my $candidatesFasta = shift;
     my $candidatesBed = shift;
+    my $clippedFasta = shift;
     
     my %candidates;
-    open( my $ffh, qq[>>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
-    open( my $afh, qq[>>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
+    open( my $ffh, qq[>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
+    open( my $afh, qq[>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
+    my $cfh;
+    if( $minSoftClip )
+    {
+        open( $cfh, qq[>$clippedFasta] ) or die qq[ERROR: Failed to create clip fasta file: $!\n];
+    }
     
     print qq[Opening BAM ($bam) and getting initial set of candidate mates....\n];
     
@@ -867,6 +990,7 @@ sub _getCandidateTEReadNames
         my $ref = $sam[ 2 ];
         my $mref = $sam[ 6 ];
         my $readLen = length( $sam[ 9 ] );
+        my $cigar = $sam[ 5 ];
         
         if( $candidates{ $name } )
         {
@@ -903,12 +1027,73 @@ sub _getCandidateTEReadNames
                my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
                print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\n];
             }
+            
+            #if in SR mode - then see if it is a candidate split read
+            #                               read mapped                             mate mapped                            mate on same chr             ins size sensible          has soft clip in cigar
+            if( $minSoftClip && ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ( $mref eq '=' || $mref eq $ref ) && $sam[ 8 ] < 3000 && $cigar =~ /(\d+)(S)/ && $1 > $minSoftClip )        #( $flag & $$BAMFLAGS{'read_paired'} ) 
+            {
+                my $seq = $sam[ 9 ];
+                my $quals = $sam[ 10 ];
+                
+                #check there arent high numbers of mismatches in the aligned portion (via MD tag if available)
+                if( $samLine =~ /\tMD:Z:([0-9ACGT\^]+)\t/ )
+                {
+                    my $md = $1;
+                    my $mismatches = ( $md =~ tr/ACGT/n/ );
+                    if( $mismatches <= 5 )
+                    {
+                        #clip at start of alignment
+                        if( $cigar =~ /^(\d+)S/ )
+                        {
+                            my $clip = $1;
+                            if( ( $flag & $$BAMFLAGS{'reverse_strand'} ) )
+                            {
+                                if( _checkAvgQuality( substr($quals, length($seq)-$clip) ) ){print $cfh qq[>$name###$sam[2]###$sam[3]###$flag###$cigar###$sam[8]\n];print $cfh substr($seq, length($seq)-$clip).qq[\n];}
+                            }
+                            else
+                            {
+                                if( _checkAvgQuality( substr($quals, 0, $clip ) ) ){print $cfh qq[>$name###$sam[2]###$sam[3]###$flag###$cigar###$sam[8]\n];print $cfh substr($seq, 0, $clip ).qq[\n];}
+                            }
+                        }
+                        elsif( $cigar =~ /(\d+)S$/ )
+                        {
+                            my $clip = $1;
+                            if( ( $flag & $$BAMFLAGS{'reverse_strand'} ) )
+                            {
+                                if( _checkAvgQuality( substr($quals, 0, $clip ) ) ){print $cfh qq[>$name###$sam[2]###$sam[3]###$flag###$cigar###$sam[8]\n];print $cfh substr($seq, 0, $clip ).qq[\n];}
+                            }
+                            else
+                            {
+                                if( _checkAvgQuality( substr($quals, length($seq)-$clip) ) ){print $cfh qq[>$name###$sam[2]###$sam[3]###$flag###$cigar###$sam[8]\n];print $cfh substr($seq, length($seq)-$clip).qq[\n];}
+                            }
+                        }
+                    }
+                }
+            }
         }
         if( $currentChr ne $ref && $ref ne '*' ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
     }
     close( $bfh );
+    close( $ffh );
+    close( $afh );
+    close( $cfh );
     
     return \%candidates;
+}
+
+sub _checkAvgQuality
+{
+    my $quals = shift;
+    my $minAvg = 15;
+    
+    my @chars = split( //, $quals );
+    my $sum = 0;
+    foreach my $q (@chars)
+    {
+        $sum += ( unpack( 'C', $q ) - 33 );
+    }
+    
+    return ($sum/length($quals)) >= $minAvg ? 1 : 0;
 }
 
 sub _checkDiscoveryOutput
@@ -975,14 +1160,14 @@ sub _outputCalls
                 
                 if( $flag == $Utilities::PASS )
                 {
-                    $out{gtypes}{$s[3]}{GT} = qq[<INS:ME>/<INS:ME>];
+                    $out{gtypes}{$sample}{GT} = qq[<INS:ME>/<INS:ME>];
                 }
                 else
                 {
-                    $out{gtypes}{$s[3]}{GT} = qq[0/0];
+                    $out{gtypes}{$sample}{GT} = qq[0/0];
                 }
-                $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
-                $out{gtypes}{$s[3]}{FL} = $flag;
+                $out{gtypes}{$sample}{GQ} = qq[$s[4]];
+                $out{gtypes}{$sample}{FL} = $flag;
                 
                 $vcf_out->format_genotype_strings(\%out);
                 print $vfh $vcf_out->format_line(\%out);
@@ -1019,14 +1204,14 @@ sub _outputCalls
                 
                 if( $flag == $Utilities::PASS )
                 {
-                    $out{gtypes}{$s[3]}{GT} = qq[$refbase/<INS:ME>];
+                    $out{gtypes}{$sample}{GT} = qq[$refbase/<INS:ME>];
                 }
                 else
                 {
-                    $out{gtypes}{$s[3]}{GT} = qq[0/0];
+                    $out{gtypes}{$sample}{GT} = qq[0/0];
                 }
-                $out{gtypes}{$s[3]}{GQ} = qq[$s[4]];
-                $out{gtypes}{$s[3]}{FL} = $flag;
+                $out{gtypes}{$sample}{GQ} = qq[$s[4]];
+                $out{gtypes}{$sample}{FL} = $flag;
                 
                 $vcf_out->format_genotype_strings(\%out);
                 print $vfh $vcf_out->format_line(\%out);
