@@ -32,7 +32,7 @@ my $DEFAULT_ID = 80;
 my $DEFAULT_LENGTH = 36;
 my $DEFAULT_ANCHORQ = 20;
 my $DEFAULT_MAX_DEPTH = 200;
-my $DEFAULT_READS = 10;
+my $DEFAULT_READS = 5;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 120;
 my $DEFAULT_MIN_CLUSTER_READS = 2;
@@ -246,7 +246,7 @@ USAGE
     else
     {
         print qq[Beginning paired-end calling...\n];
-        _findInsertions( \@bams, $sampleName, $input, $ref, $output, $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn );
+        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE], $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn );
     }
 	exit;
 }
@@ -326,7 +326,7 @@ sub _findCandidates
     if( keys( %candidates ) > 0 )
     {
         open( my $ffh, qq[>>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
-
+        
         #now go and get the reads from the bam (annoying have to traverse through the bam a second time - but required for reads where the mate is aligned distantly)
         #also dump out their mates as will need these later as anchors
         open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
@@ -486,6 +486,12 @@ sub _findCandidates
         close( $cofh );
         
         if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[SR alignment did not complete correctly\n];}
+    }
+    
+    if( $clean )
+    {
+        #delete the intermediate files
+        unlink( glob( qq[$$.*] ) ) or die qq[Failed to remove intermediate files: $!];
     }
 }
 
@@ -652,6 +658,39 @@ sub _findInsertions
     }
     close( $tfh );
     close( $cfh );
+
+    #remove all the unknown calls that overlap with calls that are assigned to a type
+    my $unknownHoms = $typeBEDFiles{unknown}{hom};
+    my $unknownHets = $typeBEDFiles{unknown}{hets};
+    foreach my $type( keys( %typeBEDFiles ) )
+    {
+        next if( $type eq 'unknown' );
+        my $f = $typeBEDFiles{$type}{hom};
+        system( qq[cat $f >> $$.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
+        
+        if( $hets )
+        {
+            $f = $typeBEDFiles{$type}{hets};
+            system( qq[cat $f >> $$.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
+        }
+    }
+    
+    my $removed = Utilities::filterOutRegions( $unknownHoms, qq[$$.allcalls.bed], qq[$$.unknownHoms.filtered] );
+    if( $removed > 0 )
+    {
+        print qq[Removed $removed hom unknown calls\n];
+        $typeBEDFiles{unknown}{hom} = qq[$$.unknownHoms.filtered];
+    }
+    
+    if( $hets && defined( $unknownHets ) && -s $unknownHets )
+    {
+        $removed = Utilities::filterOutRegions( $unknownHets, qq[$$.allcalls.bed], qq[$$.unknownHets.filtered] );
+        if( $removed > 0 )
+        {
+            print qq[Removed $removed het unknown calls\n];
+            $typeBEDFiles{unknown}{hets} = qq[$$.unknownHets.filtered];
+        }
+    }
     
     #make a VCF file with the calls
     _outputCalls( \%typeBEDFiles, $sampleName, $ref, $output );
@@ -709,10 +748,24 @@ sub _findInsertionsSR
     
     system( qq[sort -k4,4d -k1,1d -k2,2n $$.merge.SR.tab | uniq > $$.merge.SR.sorted.tab] ) == 0 or die qq[Failed to sort merged SR input files\n];
     
-    #grab the reads that didnt match any TE into a separate file (to use as evidence when calling individual elements)
-    system( qq[awk -F"\t" '{if(\$4=="unknown" ){if(and(\$6,0x0010)){print \$1"\t"\$2"\t"\$3"\t"\$4"\t-"}else{print \$1"\t"\$2"\t"\$3"\t"\$4"\t+"}}}' $$.merge.SR.sorted.tab | uniq > $$.merge.SR.unknown.tab] ) == 0 or die qq[Failed to extract unknown SR reads\n];
+    #grab the reads that didnt match any TE into a separate file (to use as evidence when calling individual elements) - NEED to adjust the coords to the actual breakpoints first
+    open( my $tfh, qq[$$.merge.SR.sorted.tab] ) or die qq[failed to open candidates file: $!\n];
+    open( my $ufh, qq[>$$.merge.SR.unknown.tab] );
+    while( my $line = <$tfh> )
+    {
+        chomp( $line );
+        my @s = split( /\t/, $line );
+        next unless $s[ 4 ] eq 'unknown';
+        my $breakpoint = Utilities::calculateCigarBreakpoint( $s[ 1 ], $s[ 6 ] );
+        my $orientation = ($s[ 5 ] & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
+        print $ufh qq[$s[0]\t$breakpoint\t$breakpoint\tunknown\t$orientation\n];
+    }
+    close( $tfh );
+    close( $ufh );
     
-    open( my $tfh, qq[$$.merge.SR.sorted.tab] ) or die qq[Failed to open merged tab file: $!\n];
+#    system( qq[awk -F"\t" '{if(\$4=="unknown" ){if(and(\$6,0x0010)){print \$1"\t"\$2"\t"\$3"\t"\$4"\t-"}else{print \$1"\t"\$2"\t"\$3"\t"\$4"\t+"}}}' $$.merge.SR.sorted.tab | uniq > $$.merge.SR.unknown.tab] ) == 0 or die qq[Failed to extract unknown SR reads\n];
+    
+    open( $tfh, qq[$$.merge.SR.sorted.tab] ) or die qq[Failed to open merged tab file: $!\n];
     my %typeBEDFiles;
     my $currentType = '';
     my $cfh;
@@ -766,6 +819,22 @@ sub _findInsertionsSR
     }
     close( $tfh );
     close( $cfh );
+    
+    #remove all the unknown calls that overlap with calls that are assigned to a type
+    my $unknownHoms = $typeBEDFiles{unknown}{hom};
+    foreach my $type( keys( %typeBEDFiles ) )
+    {
+        next if( $type eq 'unknown' );
+        my $f = $typeBEDFiles{$type}{hom};
+        system( qq[cat $f >> $$.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
+    }
+    
+    my $removed = Utilities::filterOutRegions( $unknownHoms, qq[$$.allcalls.bed], qq[$$.unknownHoms.filtered] );
+    if( $removed > 0 )
+    {
+        print qq[Removed $removed hom unknown calls\n];
+        $typeBEDFiles{unknown}{hom} = qq[$$.unknownHoms.filtered];
+    }
     
     #make a VCF file with the calls
     _outputCalls( \%typeBEDFiles, $sample, $ref, $output );
@@ -1009,6 +1078,7 @@ sub _getCandidateTEReadNames
         #            read is not a duplicate        map quality is >= minimum
         if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $qual >= $minAnchor )
         {
+            my $insSize = $sam[ 8 ];
             #           read is mapped                       mate is unmapped
             if( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ( $flag & $$BAMFLAGS{'mate_unmapped'} ) )
             {
@@ -1018,8 +1088,8 @@ sub _getCandidateTEReadNames
                my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
                print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\n];
             }
-            #            read is mapped                         mate is mapped                                  not paired correctly
-            elsif( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag & $$BAMFLAGS{'read_paired'} ) )
+            #            read is mapped                         mate is mapped                                  not paired correctly                has large enough deviation from expected ins size (short libs assumed)
+            elsif( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag & $$BAMFLAGS{'read_paired'} ) && $insSize > 30000 )
             {
                $candidates{ $name } = $flag & $$BAMFLAGS{'1st_in_pair'} ? 2 : 1; #mate is recorded
                
@@ -1036,7 +1106,7 @@ sub _getCandidateTEReadNames
                 my $quals = $sam[ 10 ];
                 
                 #check there arent high numbers of mismatches in the aligned portion (via MD tag if available)
-                if( $samLine =~ /\tMD:Z:([0-9ACGT\^]+)\t/ )
+                if( $samLine =~ /\tMD:Z:([0-9ACGT\^]+)/ )
                 {
                     my $md = $1;
                     my $mismatches = ( $md =~ tr/ACGT/n/ );

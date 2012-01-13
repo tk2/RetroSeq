@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Carp;
 
-my $FILTER_WINDOW = 50;
+my $FILTER_WINDOW = 200;
 my $BREAKPOINT_WINDOW = 250;
 
 my $BAMFLAGS = 
@@ -44,7 +44,7 @@ sub filterOutRegions
     my $outputBED = shift;
 
     my @calls;
-    open( my $ifh, $inputBED ) or die $!;
+    open( my $ifh, $inputBED ) or die qq[Failed to open $inputBED: $!\n];
     while( my $line = <$ifh> ){chomp($line);push(@calls,$line);}
     close( $ifh );
 
@@ -58,7 +58,6 @@ sub filterOutRegions
         {
 	    next unless $calls[$i];
             my @s1 = split( /\t/, $calls[$i] );
-            croak qq[Badly formatted call: $calls[$i]] unless @s1==5;
             if( $s[ 0 ] eq $s1[ 0 ] && ( 
                 ( $s1[ 1 ] > $s[ 1 ] && $s1[ 2 ] < $s[ 2 ] ) #TE call is totally enclosed in region
                 ||
@@ -249,8 +248,10 @@ sub testBreakPoint
         my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]];
         
         #want to be more descriptive with filter values to return e.g. total reads too low, one-side ok only, sides OK but distance too large
-        my $lhsRatioPass = ( $lhsRevBlue == 0 ) || ( $lhsRevBlue > 0 && $lhsFwdBlue / $lhsRevBlue > 2 );
-        my $rhsRatioPass = ( $rhsFwdBlue == 0 ) || ( $rhsFwdBlue > 0 && $rhsRevBlue / $rhsFwdBlue > 2 );
+        #my $lhsRatioPass = ( $lhsRevBlue == 0 ) || ( $lhsRevBlue > 0 && $lhsFwdBlue / $lhsRevBlue > 2 );
+        #my $rhsRatioPass = ( $rhsFwdBlue == 0 ) || ( $rhsFwdBlue > 0 && $rhsRevBlue / $rhsFwdBlue > 2 );
+        my $lhsRatioPass = ( $lhsRev == 0 ) || ( $lhsRev > 0 && $lhsFwd / $lhsRev > 2 );
+        my $rhsRatioPass = ( $rhsFwd == 0 ) || ( $rhsFwd > 0 && $rhsRev / $rhsFwd > 2 );
         
         if( ( $lhsFwd + $rhsRev ) < $minReads )
         {
@@ -260,10 +261,12 @@ sub testBreakPoint
         {
             return [$NOT_ENOUGH_READS_FLANKS, $callString, 0];
         }
+=pod
         elsif( $lhsFwdBlue < $minBlue || $rhsRevBlue < $minBlue )
         {
             return [$NOT_ENOUGH_READS_BLUE, $callString, 0];
         }
+=cut
         elsif( ! $lhsRatioPass && ! $rhsRatioPass )
         {
             return [$NEITHER_SIDE_RATIO_PASSES, $callString, 0];
