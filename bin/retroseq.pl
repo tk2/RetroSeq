@@ -36,7 +36,8 @@ my $DEFAULT_READS = 5;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 120;
 my $DEFAULT_MIN_CLUSTER_READS = 2;
-my $DEFAULT_SR_MIN_CLUSTER_READS = 2;
+my $DEFAULT_SR_MIN_CLUSTER_READS = 3;
+my $DEFAULT_SR_MIN_UNKNOWN_CLUSTER_READS = 10;
 my $DEFAULT_MAX_CLUSTER_DIST = 4000;
 my $DEFAULT_MAX_SR_CLUSTER_DIST = 30;
 my $DEFAULT_MIN_SOFT_CLIP = 30;
@@ -59,7 +60,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $srmode, $minSoftClip, $srOutputFile, $srInputFile, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $srmode, $minSoftClip, $srOutputFile, $srInputFile, $callNovel, $help);
 
 GetOptions
 (
@@ -92,6 +93,7 @@ GetOptions
     'minclip=i'     =>  \$minSoftClip,
     'srcands=s'     =>  \$srOutputFile,
     'srInput=s'     =>  \$srInputFile,
+    'novel'         =>  \$callNovel,
     'h|help'        =>  \$help,
 );
 
@@ -148,7 +150,12 @@ USAGE
     $length = defined( $length ) && $length > 25 ? $length : $DEFAULT_LENGTH;
     my $clean = defined( $noclean ) ? 0 : 1;
     
-    if( $srmode ){ if( ! $srOutputFile ){die qq[You must specify the -srcands output file parameter in split-read mode\n];}if( ! $minSoftClip ){$minSoftClip = $DEFAULT_MIN_SOFT_CLIP;}}else{undef($minSoftClip);}
+    if( $srmode )
+    {
+        if( ! $srOutputFile ){die qq[You must specify the -srcands output file parameter in split-read mode\n];}
+        if( ! $minSoftClip ){$minSoftClip = $DEFAULT_MIN_SOFT_CLIP;}
+        print qq[Running split-read discovery mode\n];
+    }else{undef($minSoftClip);}
     
     if( $readgroups && length( $readgroups ) > 0 )
     {
@@ -182,6 +189,7 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-s
     [-reads         It is the minimum number of reads required to make a call. Default is 5. Parameter is optional.]
     [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
     [-ignoreRGs     Single read group name OR a file of readgroups that should be ignored. Default is none.]
+    [-novel]    Call novel sequence insertions also (from non-TE mate pairs)
     [-noclean       Do not remove intermediate output files. Default is to cleanup.]
     
 USAGE
@@ -235,10 +243,10 @@ USAGE
     if( $srInputFile )
     {
         print qq[Beginning split-read calling...\n];
-        _findInsertionsSR( $sampleName, $srInputFile, $ref, $output.qq[.SR], $reads, $depth, $region, $clean, $heterozygous );
+        _findInsertionsSR( \@bams, $sampleName, $srInputFile, $ref, $output.qq[.SR], $reads, $depth, $region, $clean, $heterozygous, $ignoreRGsFofn, $callNovel );
         
         print qq[Beginning paired-end calling...\n];
-        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE], $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn );
+        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE], $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $callNovel );
         
         #now merge the VCF files into a single VCF
         #implement later..
@@ -246,7 +254,7 @@ USAGE
     else
     {
         print qq[Beginning paired-end calling...\n];
-        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE], $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn );
+        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE], $reads, $depth, $anchorQ, $region, $clean, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $callNovel );
     }
 	exit;
 }
@@ -511,6 +519,7 @@ sub _findInsertions
     my $hets = shift;
     my $orientate = shift;
     my $ignoreRGs = shift;
+    my $novel = shift;
     
     my @files;
     if( -f $input )
@@ -596,50 +605,53 @@ sub _findInsertions
         {
             close( $cfh );
             
-            #convert to a region BED (removing any candidates with very low numbers of reads)
-            print qq[$currentType Calling initial rough boundaries of insertions....\n];
-            my $rawTECalls1 = qq[$$.raw_calls.1.$currentType.tab];
-            my $numRegions = Utilities::convertToRegionBedPairs( qq[$$.$currentType.pe_anchors.bed], $DEFAULT_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, 1, 0, $rawTECalls1 );
-            
-            if( $numRegions == 0 )
+            if( $currentType ne 'unknown' || ($novel && $currentType eq 'unknown') )
             {
-                unlink( qq[$$.$currentType.pe_anchors.bed], $rawTECalls1 ) or die qq[Failed to delete temp files\n] if( $clean );
+                #convert to a region BED (removing any candidates with very low numbers of reads)
+                print qq[$currentType Calling initial rough boundaries of insertions....\n];
+                my $rawTECalls1 = qq[$$.raw_calls.1.$currentType.tab];
+                my $numRegions = Utilities::convertToRegionBedPairs( qq[$$.$currentType.pe_anchors.bed], $DEFAULT_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, 1, 0, $rawTECalls1 );
                 
-                $readCount = 0;
-                $currentType = $s[ 3 ];
-                print qq[PE Call: $currentType\n];
-                open( $cfh, qq[>$$.$currentType.pe_anchors.bed] ) or die $!;
-                next;
-            }
-            
-            if( defined( $filterBED ) )
-            {
-                #remove the regions specified in the exclusion BED file
-                my $filtered = qq[$$.raw_calls.1.filtered.$currentType.tab];
-                Utilities::filterOutRegions( $rawTECalls1, $filterBED, $filtered );
-                $rawTECalls1 = $filtered;
-            }
-            
-            #remove extreme depth calls
-            print qq[Removing calls with extremely high depth (>$depth)....\n];
-            my $rawTECalls2 = qq[$$.raw_calls.2.$currentType.tab];
-            _removeExtremeDepthCalls( $rawTECalls1, \@bams, $depth, $rawTECalls2, $raw_candidates );
-            
-            #new calling filtering code
-            print qq[Filtering and refining candidate regions into calls....\n];
-            my $homCalls = qq[$$.raw_calls.3.$currentType.hom.bed];
-            my $hetCalls = qq[$$.raw_calls.3.$currentType.het.bed];
-            _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
-            
-            $typeBEDFiles{ $currentType }{hom} = $homCalls if( -f $homCalls && -s $homCalls > 0 );
-            if( $hets && -f $hetCalls && -s $hetCalls > 0 ){$typeBEDFiles{ $currentType }{het} = $hetCalls;}
-            
-            #remove the temporary files for this 
-            if( $clean )
-            {
-                unlink( qq[$$.raw_reads.0.$currentType.tab], qq[$$.raw_calls.1.$currentType.tab], qq[$$.raw_calls.2.$currentType.tab] ) or die qq[Failed to delete temp files\n];
-                unlink( $homCalls ) if( -f $homCalls && -s $homCalls == 0 );
-                unlink( $hetCalls ) if ( -f $hetCalls && -s $hetCalls == 0 );
+                if( $numRegions == 0 )
+                {
+                    unlink( qq[$$.$currentType.pe_anchors.bed], $rawTECalls1 ) or die qq[Failed to delete temp files\n] if( $clean );
+                    
+                    $readCount = 0;
+                    $currentType = $s[ 3 ];
+                    print qq[PE Call: $currentType\n];
+                    open( $cfh, qq[>$$.$currentType.pe_anchors.bed] ) or die $!;
+                    next;
+                }
+                
+                if( defined( $filterBED ) )
+                {
+                    #remove the regions specified in the exclusion BED file
+                    my $filtered = qq[$$.raw_calls.1.filtered.$currentType.tab];
+                    Utilities::filterOutRegions( $rawTECalls1, $filterBED, $filtered );
+                    $rawTECalls1 = $filtered;
+                }
+                
+                #remove extreme depth calls
+                print qq[Removing calls with extremely high depth (>$depth)....\n];
+                my $rawTECalls2 = qq[$$.raw_calls.2.$currentType.tab];
+                _removeExtremeDepthCalls( $rawTECalls1, \@bams, $depth, $rawTECalls2, $raw_candidates );
+                
+                #new calling filtering code
+                print qq[Filtering and refining candidate regions into calls....\n];
+                my $homCalls = qq[$$.raw_calls.3.$currentType.hom.bed];
+                my $hetCalls = qq[$$.raw_calls.3.$currentType.het.bed];
+                _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
+                
+                $typeBEDFiles{ $currentType }{hom} = $homCalls if( -f $homCalls && -s $homCalls > 0 );
+                if( $hets && -f $hetCalls && -s $hetCalls > 0 ){$typeBEDFiles{ $currentType }{het} = $hetCalls;}
+                
+                #remove the temporary files for this 
+                if( $clean )
+                {
+                    unlink( qq[$$.raw_reads.0.$currentType.tab], qq[$$.raw_calls.1.$currentType.tab], qq[$$.raw_calls.2.$currentType.tab] ) or die qq[Failed to delete temp files\n];
+                    unlink( $homCalls ) if( -f $homCalls && -s $homCalls == 0 );
+                    unlink( $hetCalls ) if ( -f $hetCalls && -s $hetCalls == 0 );
+                }
             }
             
             last if( eof( $tfh ) );
@@ -658,37 +670,43 @@ sub _findInsertions
     }
     close( $tfh );
     close( $cfh );
-
-    #remove all the unknown calls that overlap with calls that are assigned to a type
-    my $unknownHoms = $typeBEDFiles{unknown}{hom};
-    my $unknownHets = $typeBEDFiles{unknown}{hets};
-    foreach my $type( keys( %typeBEDFiles ) )
+    
+    if( $novel )
     {
-        next if( $type eq 'unknown' );
-        my $f = $typeBEDFiles{$type}{hom};
-        system( qq[cat $f >> $$.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
-        
-        if( $hets )
+        #remove all the unknown calls that overlap with calls that are assigned to a type
+        my $unknownHoms = $typeBEDFiles{unknown}{hom};
+        my $unknownHets = $typeBEDFiles{unknown}{het};
+        foreach my $type( keys( %typeBEDFiles ) )
         {
-            $f = $typeBEDFiles{$type}{hets};
-            system( qq[cat $f >> $$.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
+            next if( $type eq 'unknown' );
+            my $f = $typeBEDFiles{$type}{hom};
+            system( qq[cat $f >> $$.PE.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
+            
+            if( $hets )
+            {
+                $f = $typeBEDFiles{$type}{het}; 
+                system( qq[cat $f >> $$.PE.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
+            }
         }
-    }
-    
-    my $removed = Utilities::filterOutRegions( $unknownHoms, qq[$$.allcalls.bed], qq[$$.unknownHoms.filtered] );
-    if( $removed > 0 )
-    {
-        print qq[Removed $removed hom unknown calls\n];
-        $typeBEDFiles{unknown}{hom} = qq[$$.unknownHoms.filtered];
-    }
-    
-    if( $hets && defined( $unknownHets ) && -s $unknownHets )
-    {
-        $removed = Utilities::filterOutRegions( $unknownHets, qq[$$.allcalls.bed], qq[$$.unknownHets.filtered] );
-        if( $removed > 0 )
+        
+        if( -f $unknownHoms )
         {
-            print qq[Removed $removed het unknown calls\n];
-            $typeBEDFiles{unknown}{hets} = qq[$$.unknownHets.filtered];
+            my $removed = Utilities::filterOutRegions( $unknownHoms, qq[$$.PE.allcalls.bed], qq[$$.unknownHoms.filtered] );
+            if( $removed > 0 )
+            {
+                print qq[Removed $removed hom unknown calls\n];
+                $typeBEDFiles{unknown}{hom} = qq[$$.unknownHoms.filtered];
+            }
+        }
+        
+        if( $hets && defined( $unknownHets ) && -s $unknownHets )
+        {
+            my $removed = Utilities::filterOutRegions( $unknownHets, qq[$$.PE.allcalls.bed], qq[$$.unknownHets.filtered] );
+            if( $removed > 0 )
+            {
+                print qq[Removed $removed het unknown calls\n];
+                $typeBEDFiles{unknown}{het} = qq[$$.unknownHets.filtered];
+            }
         }
     }
     
@@ -708,6 +726,7 @@ sub _findInsertions
 
 sub _findInsertionsSR
 {
+    my $bamsRef = shift;my @bams = @{$bamsRef};
     my $sample = shift;
     my $input = shift;
     my $ref = shift;
@@ -717,6 +736,8 @@ sub _findInsertionsSR
     my $region = shift;
     my $clean = shift;
     my $hets = shift;
+    my $ignoreRGsFormatted = shift;
+    my $novel = shift;
     
     my @files;
     if( -f $input )
@@ -763,8 +784,6 @@ sub _findInsertionsSR
     close( $tfh );
     close( $ufh );
     
-#    system( qq[awk -F"\t" '{if(\$4=="unknown" ){if(and(\$6,0x0010)){print \$1"\t"\$2"\t"\$3"\t"\$4"\t-"}else{print \$1"\t"\$2"\t"\$3"\t"\$4"\t+"}}}' $$.merge.SR.sorted.tab | uniq > $$.merge.SR.unknown.tab] ) == 0 or die qq[Failed to extract unknown SR reads\n];
-    
     open( $tfh, qq[$$.merge.SR.sorted.tab] ) or die qq[Failed to open merged tab file: $!\n];
     my %typeBEDFiles;
     my $currentType = '';
@@ -784,16 +803,20 @@ sub _findInsertionsSR
         {
             close( $cfh );
             
-            #resort the bed file by pos
-            system( qq[sort -k1,1d -k2,2n $$.$currentType.sr_anchors.bed $$.merge.SR.unknown.tab > $$.$currentType.sr_anchors.sorted.bed] ) == 0 or die qq[Sort failed on $currentType\n];
-            
-            #call the regions
-            if( $readCount > 0 && Utilities::convertToRegionBedPairs( qq[$$.$currentType.sr_anchors.sorted.bed], $DEFAULT_SR_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_SR_CLUSTER_DIST, 0, 1, qq[$$.$currentType.sr_calls.bed] ) > 0 )
+            if( $currentType ne 'unknown' || ($novel && $currentType eq 'unknown') )
             {
-                $typeBEDFiles{ $currentType }{hom} = qq[$$.$currentType.sr_calls.bed];
-                #unlink( qq[$$.$currentType.sr_anchors.bed], qq[$$.$currentType.sr_anchors.sorted.bed] );
-            }else{unlink( qq[$$.$currentType.sr_anchors.bed], qq[$$.$currentType.sr_anchors.sorted.bed] );}
-            
+                #resort the bed file by pos
+                system( qq[sort -k1,1d -k2,2n $$.$currentType.sr_anchors.bed $$.merge.SR.unknown.tab > $$.$currentType.sr_anchors.sorted.bed] ) == 0 or die qq[Sort failed on $currentType\n];
+                
+                
+                #call the regions
+                my $minReads = $currentType eq 'unknown' ? $DEFAULT_SR_MIN_UNKNOWN_CLUSTER_READS : $DEFAULT_SR_MIN_CLUSTER_READS;
+                if( $readCount > 0 && Utilities::convertToRegionBedPairs( qq[$$.$currentType.sr_anchors.sorted.bed], $minReads, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_SR_CLUSTER_DIST, 0, 1, qq[$$.$currentType.sr_calls.bed] ) > 0 )
+                {
+                    $typeBEDFiles{ $currentType }{hom} = qq[$$.$currentType.sr_calls.bed];
+                    #unlink( qq[$$.$currentType.sr_anchors.bed], qq[$$.$currentType.sr_anchors.sorted.bed] );
+                }else{unlink( qq[$$.$currentType.sr_anchors.bed], qq[$$.$currentType.sr_anchors.sorted.bed] );}
+            }
             last if( eof( $tfh ) );
             
             %currentReads = ();
@@ -803,8 +826,8 @@ sub _findInsertionsSR
         }
         elsif( ! $currentReads{ $s[4] } )
         {
-            #check it is paired correctly
-            if( ( $s[ 5 ] & $$BAMFLAGS{'read_paired'}) )
+            #check it is paired correctly   AND there is only 1 breakpoint on the read
+            if( ( $s[ 5 ] & $$BAMFLAGS{'read_paired'}) && ($s[6]=~tr/S/S/) == 1 )
             {
                 my $orientation = ($s[ 5 ] & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
                 
@@ -820,20 +843,31 @@ sub _findInsertionsSR
     close( $tfh );
     close( $cfh );
     
-    #remove all the unknown calls that overlap with calls that are assigned to a type
-    my $unknownHoms = $typeBEDFiles{unknown}{hom};
-    foreach my $type( keys( %typeBEDFiles ) )
+    if( $novel )
     {
-        next if( $type eq 'unknown' );
-        my $f = $typeBEDFiles{$type}{hom};
-        system( qq[cat $f >> $$.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
-    }
-    
-    my $removed = Utilities::filterOutRegions( $unknownHoms, qq[$$.allcalls.bed], qq[$$.unknownHoms.filtered] );
-    if( $removed > 0 )
-    {
-        print qq[Removed $removed hom unknown calls\n];
-        $typeBEDFiles{unknown}{hom} = qq[$$.unknownHoms.filtered];
+        #remove all the unknown calls that overlap with calls that are assigned to a type
+        my $unknownHoms = $typeBEDFiles{unknown}{hom};
+        foreach my $type( keys( %typeBEDFiles ) )
+        {
+            next if( $type eq 'unknown' );
+            my $f = $typeBEDFiles{$type}{hom};
+            system( qq[cat $f >> $$.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
+        }
+        
+        my $removed = Utilities::filterOutRegions( $unknownHoms, qq[$$.allcalls.bed], qq[$$.unknownHoms.filtered] );
+        if( $removed > 0 )
+        {
+            print qq[Removed $removed hom unknown calls\n];
+            $typeBEDFiles{unknown}{hom} = qq[$$.unknownHoms.filtered];
+        }
+        
+        #test if the breakpoint looks like an inversion breakpoint
+        foreach my $type( keys( %typeBEDFiles ) )
+        {
+            my $homs = $typeBEDFiles{$type}{hom};
+            my $removed = Utilities::checkBreakpointsSR($homs, \@bams, ($DEFAULT_SR_MIN_CLUSTER_READS * 2), $ignoreRGsFormatted, $DEFAULT_ANCHORQ, qq[$homs.breakpoints_checked]);
+            if( $removed > 0 ){$typeBEDFiles{$type}{hom} = qq[$homs.breakpoints_checked];}
+        }
     }
     
     #make a VCF file with the calls
@@ -892,23 +926,31 @@ sub _filterCallsBedMinima
 	    
         print qq[Testing breakpoint $breakpoint\n];
         
-        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $breakpoint, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, 0 );
+        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $breakpoint, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, $DEFAULT_MIN_SOFT_CLIP, 0 );
         
         my $flag = $result->[0];
         my $call = $result->[1];
         my $ratio = $result->[2];
         
-        #decide if its a hom or het call by the depth
-        if( $depth <= 10 )
+        if( $flag == $Utilities::INV_BREAKPOINT )
         {
-            print qq[Hom breakpoint score: $ratio Flag: $flag\n];
-            print $homsfh $call.qq[\t$flag\n];
+            print qq[Failed - at inversion breakpoint\n];
         }
-        elsif( $hets )
+        elsif( $flag > $Utilities::NOT_ENOUGH_READS_CLUSTER )
         {
-            print qq[Het breakpoint score: $ratio Flag: $flag\n];
-            print $hetsfh $call.qq[\t$flag\n];
+            #decide if its a hom or het call by the depth
+            if( $depth <= 10 )
+            {
+                print qq[Hom breakpoint score: $ratio Flag: $flag\n];
+                print $homsfh $call.qq[\t$flag\n];
+            }
+            elsif( $hets )
+            {
+                print qq[Het breakpoint score: $ratio Flag: $flag\n];
+                print $hetsfh $call.qq[\t$flag\n];
+            }
         }
+        else{print qq[Discarding: $call : $flag\n];}
 	}
 	close( $ifh );
 	close( $homsfh );
@@ -1075,32 +1117,30 @@ sub _getCandidateTEReadNames
             }
         }
         
-        #            read is not a duplicate        map quality is >= minimum
-        if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $qual >= $minAnchor )
+        my $supporting = Utilities::isSupportingClusterRead( $flag, $sam[ 8 ], $qual, $minAnchor, $minSoftClip, $cigar );
+        
+        if( $supporting > 0 )
         {
-            my $insSize = $sam[ 8 ];
-            #           read is mapped                       mate is unmapped
-            if( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ( $flag & $$BAMFLAGS{'mate_unmapped'} ) )
+            if( $supporting == 1 )
             {
                $candidates{ $name } = $flag & $$BAMFLAGS{'1st_in_pair'} ? 2 : 1; #mate is recorded
-               
+                   
                my $pos = $sam[ 3 ];
                my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
                print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\n];
             }
-            #            read is mapped                         mate is mapped                                  not paired correctly                has large enough deviation from expected ins size (short libs assumed)
-            elsif( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag & $$BAMFLAGS{'read_paired'} ) && $insSize > 30000 )
+            elsif( $supporting == 2 )
             {
                $candidates{ $name } = $flag & $$BAMFLAGS{'1st_in_pair'} ? 2 : 1; #mate is recorded
-               
+                   
                my $pos = $sam[ 3 ];
                my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
                print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\n];
             }
             
             #if in SR mode - then see if it is a candidate split read
-            #                               read mapped                             mate mapped                            mate on same chr             ins size sensible          has soft clip in cigar
-            if( $minSoftClip && ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ( $mref eq '=' || $mref eq $ref ) && $sam[ 8 ] < 3000 && $cigar =~ /(\d+)(S)/ && $1 > $minSoftClip )        #( $flag & $$BAMFLAGS{'read_paired'} ) 
+            #                               read mapped                             mate mapped                            mate on same chr             ins size sensible          has single soft clip in cigar bigger than minimum clip size
+            if( $minSoftClip && ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ( $mref eq '=' || $mref eq $ref ) && $sam[ 8 ] < 3000 && ($cigar=~tr/S/S/) == 1 && $cigar =~ /(\d+)(S)/ && $1 > $minSoftClip )        #( $flag & $$BAMFLAGS{'read_paired'} ) 
             {
                 my $seq = $sam[ 9 ];
                 my $quals = $sam[ 10 ];
@@ -1211,6 +1251,8 @@ sub _outputCalls
                 my @s = split( /\t/, $_ );
                 my $pos = int( ( $s[ 1 ] + $s[ 2 ] ) / 2 );
                 my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
+                next if( ! $refbase );
+                
                 my $ci1 = $s[ 1 ] - $pos;
                 my $ci2 = $s[ 2 ] - $pos;
                 my $flag = $s[ 5 ];
@@ -1255,6 +1297,8 @@ sub _outputCalls
                 my @s = split( /\t/, $_ );
                 my $pos = int( ( $s[ 1 ] + $s[ 2 ] ) / 2 );
                 my $refbase = _getReferenceBase( $reference, $s[ 0 ], $pos );
+                next if( ! $refbase );
+                
                 my $ci1 = $s[ 1 ] - $pos;
                 my $ci2 = $s[ 2 ] - $pos;
                 my $flag = $s[ 5 ];
@@ -1371,7 +1415,7 @@ sub _getReferenceBase
     my $base = `samtools faidx $fasta $chr:$pos-$pos | tail -1`;
     chomp( $base );
     
-    if( length( $base ) != 1 && $base !~ /acgtnACGTN/ ){die qq[Failed to get reference base at $chr:$pos-$pos: $base\n]}
+    if( length( $base ) != 1 || $base !~ /[acgtnACGTN]/ ){warn qq[Failed to get reference base at $chr:$pos-$pos: $base\n];return undef;}
     return $base;
 }
 

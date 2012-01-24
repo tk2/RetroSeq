@@ -23,7 +23,8 @@ my $BAMFLAGS =
 };
 
 #status that can be returned from calling
-our $UNKNOWN_FAIL = 0;
+our $UNKNOWN_FAIL = -1;
+our $INV_BREAKPOINT = 0;
 our $HOM_DEPTH_TOO_HIGH = 1;
 our $NOT_ENOUGH_READS_CLUSTER = 2;
 our $NOT_ENOUGH_READS_FLANKS = 3;
@@ -42,12 +43,12 @@ sub filterOutRegions
     my $inputBED = shift;
     my $filterBED = shift;
     my $outputBED = shift;
-
+    
     my @calls;
     open( my $ifh, $inputBED ) or die qq[Failed to open $inputBED: $!\n];
     while( my $line = <$ifh> ){chomp($line);push(@calls,$line);}
     close( $ifh );
-
+    
     open( my $ffh, $filterBED ) or die $!;
     my $filtered = 0;
     while( my $region = <$ffh> )
@@ -59,7 +60,7 @@ sub filterOutRegions
 	    next unless $calls[$i];
             my @s1 = split( /\t/, $calls[$i] );
             if( $s[ 0 ] eq $s1[ 0 ] && ( 
-                ( $s1[ 1 ] > $s[ 1 ] && $s1[ 2 ] < $s[ 2 ] ) #TE call is totally enclosed in region
+                ( $s1[ 1 ] >= $s[ 1 ] && $s1[ 2 ] <= $s[ 2 ] ) #TE call is totally enclosed in region
                 ||
                 ( abs( $s1[ 1 ] - $s[ 1 ] ) < $FILTER_WINDOW )
                 ||
@@ -69,11 +70,11 @@ sub filterOutRegions
                 ||
                 ( abs( $s1[ 2 ] - $s[ 2 ] ) < $FILTER_WINDOW )
                 ||
-		( $s1[ 1 ] > $s[ 1 ] && $s1[ 1 ] < $s[ 2 ] )
+		( $s1[ 1 ] >= $s[ 1 ] && $s1[ 1 ] <= $s[ 2 ] )
 		||
-		( $s1[ 2 ] > $s[ 1 ] && $s1[ 2 ] < $s[ 2 ] )
+		( $s1[ 2 ] >= $s[ 1 ] && $s1[ 2 ] <= $s[ 2 ] )
 		||
-                ( $s[ 1 ] > $s1[ 1 ] && $s[ 2 ] < $s1[ 2 ] )  #TE in ref in enclosed within the called TE region
+                ( $s[ 1 ] >= $s1[ 1 ] && $s[ 2 ] <= $s1[ 2 ] )  #TE in ref in enclosed within the called TE region
                 )
               )
             {
@@ -159,7 +160,7 @@ sub _local_min_max
 
 sub testBreakPoint
 {
-    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 9;
+    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 10;
     
     my $chr = shift;
     my $refPos = shift;
@@ -170,11 +171,12 @@ sub testBreakPoint
     my $dfh = shift; #file handle to print out info on failed calls
     my $ignoreRGs = shift; #file of lines with "RG:tag\t"
     my $minReads = shift;
+    my $minSoftClip = shift;
     my $genotypeMode = shift; #0/1 saying whether to operate in genotyping mode (i.e. less stringent criteria)
     
     my @originalCallA = split( /\t/, $originalCall );
-    my $lhsWindow = $refPos - $originalCallA[ 1 ];
-    my $rhsWindow = $originalCallA[ 2 ] - $refPos;
+    my $lhsWindow = $refPos - $originalCallA[ 1 ]; $lhsWindow = 400 if( $lhsWindow < 400 );
+    my $rhsWindow = $originalCallA[ 2 ] - $refPos; $rhsWindow = 400 if( $rhsWindow < 400 );
     
     #test to see if lots of rp's either side
     my $lhsFwdBlue = 0; my $lhsRevBlue = 0; my $rhsFwdBlue = 0; my $rhsRevBlue = 0;
@@ -198,18 +200,19 @@ sub testBreakPoint
     
     #compute the distance from the breakpoint to the last fwd read and the first rev read (and then add this to the read window buffer)
     
-    
-	#also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping)
+	#also check the orientation of the supporting reads (i.e. its not just a random mixture of f/r reads overlapping) AND count the number of FF and RR read pairs to remove biases near inversion breakpoints
+	my $numSameOrientation = 0;
 	my $cmd = $cmdpre.($refPos-$lhsWindow).qq[-].($refPos+$rhsWindow).qq[ | ].(defined($ignoreRGs) ? qq[ grep -v -f $ignoreRGs |] : qq[]);
 	open( my $tfh, $cmd ) or die $!;
 	while( my $sam = <$tfh> )
 	{
 	    chomp( $sam );
 	    my @s = split( /\t/, $sam );
-        next unless $s[ 4 ] > $minMapQ;
-        #        the mate is mapped                       or mate ref name is different chr
-        if( !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'}) && ( $s[ 6 ] ne '=' ) )
-        {
+	    
+	    my $supporting = isSupportingClusterRead( $s[ 1 ], $s[ 8 ], $s[ 4 ], $minMapQ, $minSoftClip, $s[ 5 ] );
+	    
+	    if( $supporting  == 2 )
+	    {
             if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
             {
                 if( $s[ 3 ] < $refPos ){$lhsRevBlue++;}else{$rhsRevBlue++;$firstBluePos = $s[ 3 ] if( $s[ 3 ] < $firstBluePos );}
@@ -220,7 +223,7 @@ sub testBreakPoint
             }
         }
         #        the mate is unmapped
-        elsif( $s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} )
+        elsif( $supporting == 1 )
         {
             if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
             {
@@ -231,22 +234,34 @@ sub testBreakPoint
                 if( $s[ 3 ] < $refPos ){$lhsFwdGreen++;}else{$rhsFwdGreen++;}
             }
         }
+        
+        #       read is mapped                                  mate is mapped                           not paired correctly                  ins size < 50k               both mates are mapped to same strand
+        if( ! ($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && $s[ 8 ] < 50000 && ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) == ( $s[ 1 ] & $$BAMFLAGS{'mate_reverse'} ) )
+        {
+            $numSameOrientation ++;
+        }
     }
     
     unlink( qq[/tmp/$$.region.bam] );
+    
+    #if it appears to be an inversion breakpoint
+    my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]];
+    print qq[No same orientation: $numSameOrientation\n];
+    if( $numSameOrientation > $originalCallA[ 4 ] )
+    {
+        return [$INV_BREAKPOINT, $callString, 10000 ];
+    }
     
     #check there are supporting read pairs either side of the depth minima
     my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
     my $dist = $firstBluePos - $lastBluePos;
     
     my $minBlue = int($minReads / 2);
-
+    
     print $dfh qq[TEST: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
     
     if( ! $genotypeMode ) #calling mode
     {
-        my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]];
-        
         #want to be more descriptive with filter values to return e.g. total reads too low, one-side ok only, sides OK but distance too large
         #my $lhsRatioPass = ( $lhsRevBlue == 0 ) || ( $lhsRevBlue > 0 && $lhsFwdBlue / $lhsRevBlue > 2 );
         #my $rhsRatioPass = ( $rhsFwdBlue == 0 ) || ( $rhsFwdBlue > 0 && $rhsRevBlue / $rhsFwdBlue > 2 );
@@ -259,6 +274,7 @@ sub testBreakPoint
         }
         elsif( $lhsFwd < $minReads || $rhsRev < $minReads )
         {
+            print qq[Code: $NOT_ENOUGH_READS_FLANKS\t$lhsFwd\t$rhsRev\n];
             return [$NOT_ENOUGH_READS_FLANKS, $callString, 0];
         }
 =pod
@@ -286,41 +302,91 @@ sub testBreakPoint
         }
         
         return [$UNKNOWN_FAIL, $callString, 10000 ];
-=pod	            
-                if( $lhsFwdBlue >= $minBlue && $rhsRevBlue >= $minBlue && $lhsFwd >= $minReads && $rhsRev >= $minReads && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) && $dist < 120 )
-                {
-                    my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
-                    my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];
-                    print $dfh qq[PASS: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
-                    
-                    return [$ratio,$callString];
-                }
-                else
-                {
-                    print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
-                    return undef;
-                }
-=cut
-            }
-            else #genotyping mode - less stringent num of reads required
+    }
+    else #genotyping mode - less stringent num of reads required
+    {
+        if( ( $lhsFwdBlue >= $minBlue && $lhsFwd >= $minReads && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) )#&& $dist < 120 )
+            ||
+            ( $rhsRevBlue >= $minBlue && $rhsRev >= $minReads && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) )#&& $dist < 120 )
+          )
+        {
+            my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
+            my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];
+            print $dfh qq[PASS: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+            
+            return [$lhsFwd+$rhsRev]; #return number of reads supporting call
+        }
+        else
+        {
+            print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+            return undef;
+        }
+    }
+}
+
+sub checkBreakpointsSR
+{
+    croak qq[Incorrect number of arguments: ].scalar(@_) unless @_ == 6;
+    my $calls = shift;
+    my $bref = shift;my @bams = @{$bref};
+    my $minReads = shift;
+    my $ignoreRGs = shift;
+    my $minMapQ = shift;
+    my $outputF = shift;
+    
+    my $removed = 0;
+    open( my $ifh, $calls ) or die qq[Failed to open calls file $calls: $!];
+    open( my $ofh, qq[>$outputF] ) or die qq[Failed to create output calls file $outputF: $!];
+    #go through each call and check there isnt a cluster of FF or RR reads around it (i.e. indicating its an inversion breakpoint)
+    while( my $call = <$ifh> )
+    {
+        chomp($call);
+        my @originalCallA = split( /\t/, $call );
+        my $chr = $originalCallA[ 0 ];
+        my $refPos = $originalCallA[ 2 ] == $originalCallA[ 1 ] ? $originalCallA[ 1 ] : $originalCallA[ 1 ] + int( ( $originalCallA[ 2 ] - $originalCallA[ 1 ] ) / 2 );
+        my $lhsWindow = $refPos - $originalCallA[ 1 ]; $lhsWindow = 400 if( $lhsWindow < 400 );
+        my $rhsWindow = $originalCallA[ 2 ] - $refPos; $rhsWindow = 400 if( $rhsWindow < 400 );
+        
+        my $cmdpre;
+        if( @bams > 1 )
+        {
+            if( _mergeRegionBAMs( \@bams, $chr, $refPos-$lhsWindow-400, $refPos+$rhsWindow+400, qq[/tmp/$$.region.bam] ) )
             {
-                if( ( $lhsFwdBlue >= $minBlue && $lhsFwd >= $minReads && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) )#&& $dist < 120 )
-                    ||
-                    ( $rhsRevBlue >= $minBlue && $rhsRev >= $minReads && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) )#&& $dist < 120 )
-                  )
-                {
-                    my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
-                    my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];
-                    print $dfh qq[PASS: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
-                    
-                    return [$lhsFwd+$rhsRev]; #return number of reads supporting call
-                }
-                else
-                {
-                    print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
-                    return undef;
-                }
+                $cmdpre = qq[samtools view /tmp/$$.region.bam $chr:];
+            }else{die qq[Failed to extract region $chr:$refPos BAM];}
+        }
+        else
+        {
+            $cmdpre = qq[samtools view $bams[0] $chr:];
+        }
+        
+        my %numSameOrientation;
+        my $cmd = $cmdpre.($refPos-$lhsWindow).qq[-].($refPos+$rhsWindow).qq[ | ].(defined($ignoreRGs) ? qq[ grep -v -f $ignoreRGs |] : qq[]);
+        open( my $tfh, $cmd ) or die $!;
+        while( my $sam = <$tfh> )
+        {
+            chomp( $sam );
+            my @s = split( /\t/, $sam );
+            next unless $s[ 4 ] > $minMapQ;
+            
+            #       read is mapped                                  mate is mapped                           not paired correctly                  ins size < 50k               both mates are mapped to same strand
+            if( ! ($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && $s[ 8 ] < 50000 && ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) == ( $s[ 1 ] & $$BAMFLAGS{'mate_reverse'} ) )
+            {
+                $numSameOrientation{ $s[ 0 ] } = 1;
+                print qq[OR: $s[0]\t$s[1]\n];
             }
+        }
+        
+        unlink( qq[/tmp/$$.region.bam] );
+        
+        if( keys( %numSameOrientation ) < ( $originalCallA[ 4 ] * 0.5 ) )
+        {
+            print $ofh qq[$call\n];
+        }
+        else{my $num = scalar( keys( %numSameOrientation ) );print qq[Removing call $call. Same orientation: $num\n];$removed++;}
+    }
+    
+    return $removed;
 }
 
 sub genotypeRegion
@@ -597,7 +663,7 @@ print "POS $regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t$reads_in_regionF
             elsif( $s[ 0 ] ne $regionChrRev ) #on next chr
             {
                 #done - call the region
-                $revClusters{ $regionChrRev }{ $regionStartRev } = [ $regionChrRev, $regionStartRev, $regionEndRev, $reads_in_regionRev ] if( $reads_in_regionRev >= $minReads && $reads_with_idRev > ( $minReads * 0.5 ) );
+                $revClusters{ $regionChrRev }{ $regionStartRev } = [ $regionChrRev, $regionStartRev, $regionEndRev, $reads_in_regionRev ] if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
                 
                 $reads_in_regionRev = 1;
                 $regionStartRev = $s[ 1 ];
@@ -613,7 +679,7 @@ print "POS $regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t$reads_in_regionF
             {
                 #call the region
 print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionRev\t$reads_with_idRev\n" if( $reads_in_regionRev >= $minReads );
-                $revClusters{ $regionChrRev }{ $regionStartRev } = [ $regionChrRev, $regionStartRev, $regionEndRev, $reads_in_regionRev ] if( $reads_in_regionRev >= $minReads && $reads_with_idRev > ( $minReads * 0.5 ) );
+                $revClusters{ $regionChrRev }{ $regionStartRev } = [ $regionChrRev, $regionStartRev, $regionEndRev, $reads_in_regionRev ] if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
                 
                 $reads_in_regionRev = 1;
                 $regionStartRev = $s[ 1 ];
@@ -638,9 +704,9 @@ print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionR
 	    }
 	}
 	print "POS $regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t$reads_in_regionFwd\n" if( $reads_in_regionFwd >= $minReads );
-    $fwdClusters{ $regionChrFwd }{ $regionEndFwd } = [ $regionChrFwd, $regionStartFwd, $regionEndFwd, $reads_in_regionFwd ] if( $reads_in_regionFwd >= $minReads );
+    $fwdClusters{ $regionChrFwd }{ $regionEndFwd } = [ $regionChrFwd, $regionStartFwd, $regionEndFwd, $reads_in_regionFwd ] if( $reads_in_regionFwd >= $minReads && $reads_with_idFwd >= ( $minReads * 0.5 ) );
 	print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionRev\n" if( $reads_in_regionRev >= $minReads );
-    $revClusters{ $regionChrRev }{ $regionStartRev } = [ $regionChrRev, $regionStartRev, $regionEndRev, $reads_in_regionRev ] if( $reads_in_regionRev >= $minReads );
+    $revClusters{ $regionChrRev }{ $regionStartRev } = [ $regionChrRev, $regionStartRev, $regionEndRev, $reads_in_regionRev ] if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
     
 	close( $cfh );
 	
@@ -652,6 +718,8 @@ print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionR
 	foreach my $fwdChr( keys( %fwdClusters ) )
 	{
 	    my %fwdChrClusters = %{$fwdClusters{$fwdChr}};
+	    
+	    next if( ! $revClusters{$fwdChr} );
 	    my %revChrClusters = %{$revClusters{$fwdChr}};
 	    
 	    my @revStartPositions = sort( {$a<=>$b} keys( %{$revClusters{$fwdChr}} ) );
@@ -660,29 +728,40 @@ print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionR
 	    my $fwdEndPositionsIndex = 0;
 	    while( $revStartPositionsIndex < @revStartPositions && $fwdEndPositionsIndex < @fwdEndPositions )
 	    {
-print qq[$fwdEndPositions[ $fwdEndPositionsIndex ] $fwdEndPositionsIndex $revStartPositions[ $revStartPositionsIndex ] $revStartPositionsIndex\n];
+print qq[TEST: $fwdEndPositions[ $fwdEndPositionsIndex ] $fwdEndPositionsIndex $revStartPositions[ $revStartPositionsIndex ] $revStartPositionsIndex\n];
 print abs( $revStartPositions[ $revStartPositionsIndex ] - $fwdEndPositions[ $fwdEndPositionsIndex ] ).qq[\n];
-	        if( abs( $revStartPositions[ $revStartPositionsIndex ] - $fwdEndPositions[ $fwdEndPositionsIndex ] ) < $max_fwd_rev_gap )
+            #       if end of fwd is close enough to start of rev cluster
+	        if( abs( $revStartPositions[ $revStartPositionsIndex ] - $fwdEndPositions[ $fwdEndPositionsIndex ] ) < $max_fwd_rev_gap
+	            ||
+	            #       forward cluster contained within reverse cluster
+	            $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ] >= $revStartPositions[ $revStartPositionsIndex ] && $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 2 ] <= $revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ]
+	            ||
+	            #reverse cluster contained within forward cluster
+	            $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ] <= $revStartPositions[ $revStartPositionsIndex ] && $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 2 ] >= $revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ]
+            )
 	        {
-	            #check the overlap <50% - i.e. -> <- for most reads
-	            #                        fwd start lt rev start
-print $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].qq[<].$revStartPositions[ $revStartPositionsIndex ].qq[\t].$fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].qq[<].$revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ].qq[\n];
-	            if( $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ] <= $revStartPositions[ $revStartPositionsIndex ] && $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ] <= $revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ] )
-	            {
-	                my $reads = $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 3 ] + $revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 3 ];
-	                if( $reads >= $minReads * 2 )
-	                {
-	                    $regionsCalled ++;
-                        print $ofh qq[$fwdChr\t].$fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].qq[\t].$revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
-                        print qq[CLUSTER $fwdChr\t].$fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].qq[\t].$revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
-                        
-                        undef( $fwdEndPositions[ $fwdEndPositionsIndex ] );
-                        undef( $revStartPositions[ $revStartPositionsIndex ] );
-                    }
-                    $revStartPositionsIndex ++;
-                    $fwdEndPositionsIndex ++;
-	                next;
-	            }
+	            print qq[Cluster pair: ].$fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].qq[\t].$fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 2 ].qq[\t].$revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 1 ].qq[\t].$revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ].qq[\n];
+	            
+                my $reads = $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 3 ] + $revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 3 ];
+                if( $reads >= $minReads * 2 )
+                {
+                    #work out 5' and 3' boundaries of the cluster
+                    my $start = $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ] < $revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 1 ] ? $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ] : $revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 1 ];
+                    my $end = $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 2 ] > $revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ] ? $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 2 ] : $revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ];
+                    
+                    $regionsCalled ++;
+                    print $ofh qq[$fwdChr\t$start\t$end\t$id\t$reads\t].$PASS.qq[\n];
+                    print qq[CLUSTER: $fwdChr\t$start\t$end\t$id\t$reads\t].$PASS.qq[\n];
+                    
+                    #print $ofh qq[$fwdChr\t].$fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].qq[\t].$revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
+                    #print qq[CLUSTER $fwdChr\t].$fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].qq[\t].$revClusters{ $fwdChr }{ $revStartPositions[ $revStartPositionsIndex ] }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
+                    
+                    undef( $fwdEndPositions[ $fwdEndPositionsIndex ] );
+                    undef( $revStartPositions[ $revStartPositionsIndex ] );
+                }
+                $revStartPositionsIndex ++;
+                $fwdEndPositionsIndex ++;
+                next;
 	        }
 =pod	        
 	        elsif( $allowOneSided == 1 )
@@ -712,27 +791,32 @@ print $fwdClusters{ $fwdChr }{ $fwdEndPositions[ $fwdEndPositionsIndex ] }[ 1 ].
 	        else{$revStartPositionsIndex ++;}
 	    }
 	    
-	    foreach my $fwdClusterEndPos( @fwdEndPositions )
+	    if( $allowOneSided == 1 )
 	    {
-	        if( $fwdClusterEndPos && $fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 3 ] > $minReads )
-	        {
-	            my $reads = $fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 3 ];
-	            print $ofh qq[$fwdChr\t].$fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 1 ].qq[\t].$fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
-                print qq[CLUSTER_F $fwdChr\t].$fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 1 ].qq[\t].$fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
-                $regionsCalled ++;
-	        }
-	    }
-	    
-	    foreach my $revClusterEndPos( @revStartPositions )
-	    {
-	        if( $revClusterEndPos && $revClusters{ $fwdChr }{ $revClusterEndPos }[ 3 ] > $minReads )
-	        {
-	            my $reads = $revClusters{ $fwdChr }{ $revClusterEndPos }[ 3 ];
-	            print $ofh qq[$fwdChr\t].$revClusters{ $fwdChr }{ $revClusterEndPos }[ 1 ].qq[\t].$revClusters{ $fwdChr }{ $revClusterEndPos }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
-                print qq[CLUSTER_R $fwdChr\t].$revClusters{ $fwdChr }{ $revClusterEndPos }[ 1 ].qq[\t].$revClusters{ $fwdChr }{ $revClusterEndPos }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
-                $regionsCalled ++;
-	        }
-	    }
+#=pod	    
+            foreach my $fwdClusterEndPos( @fwdEndPositions )
+            {
+                if( $fwdClusterEndPos && $fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 3 ] > $minReads )
+                {
+                    my $reads = $fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 3 ];
+                    print $ofh qq[$fwdChr\t].$fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 1 ].qq[\t].$fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
+                    print qq[CLUSTER_F $fwdChr\t].$fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 1 ].qq[\t].$fwdClusters{ $fwdChr }{ $fwdClusterEndPos }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
+                    $regionsCalled ++;
+                }
+            }
+            
+            foreach my $revClusterEndPos( @revStartPositions )
+            {
+                if( $revClusterEndPos && $revClusters{ $fwdChr }{ $revClusterEndPos }[ 3 ] > $minReads )
+                {
+                    my $reads = $revClusters{ $fwdChr }{ $revClusterEndPos }[ 3 ];
+                    print $ofh qq[$fwdChr\t].$revClusters{ $fwdChr }{ $revClusterEndPos }[ 1 ].qq[\t].$revClusters{ $fwdChr }{ $revClusterEndPos }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
+                    print qq[CLUSTER_R $fwdChr\t].$revClusters{ $fwdChr }{ $revClusterEndPos }[ 1 ].qq[\t].$revClusters{ $fwdChr }{ $revClusterEndPos }[ 2 ].qq[\t$id\t$reads\t].$PASS.qq[\n];
+                    $regionsCalled ++;
+                }
+            }
+#=cut
+        }
 	}
 	
 	close( $ofh );
@@ -953,6 +1037,43 @@ sub calculateCigarBreakpoint
     {
         if( $cigar =~ /(\d\d)M/ ){return ($sam_pos + $1);}else{return $sam_pos;}
     }
+}
+
+=pod
+return 1 - unmapped mate
+return 2 - mate mapped but incorrectly
+=cut
+sub isSupportingClusterRead
+{
+    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 6;
+    
+    my $flag = shift;
+    my $insert = shift;
+    my $mapQ = shift;
+    my $minQual = shift;
+    my $minSoftClip = shift;
+    my $cigar = shift;
+    
+    #            read is not a duplicate        map quality is >= minimum
+    if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $mapQ >= $minQual )
+    {
+        #        the mate is mapped                       or mate isnt mapped correctly
+        #           read is mapped                       mate is unmapped
+        if( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ( $flag & $$BAMFLAGS{'mate_unmapped'} ) )
+        {
+            return 1;
+        }
+        #                               read mapped                             mate mapped                            ins size sensible          has single soft clip in cigar bigger than minimum clip size
+        elsif( ( defined( $minSoftClip ) && $minSoftClip > 0 && ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ( $flag & $$BAMFLAGS{'read_paired'} ) && abs( $insert ) < 3000 && ($cigar=~tr/S/S/) == 1 && $cigar =~ /(\d+)(S)/ && $1 > $minSoftClip )
+            ||
+            #            read is mapped                         mate is mapped                                  not paired correctly                has large enough deviation from expected ins size (short libs assumed)
+            ( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag & $$BAMFLAGS{'read_paired'} ) && abs( $insert ) > 30000 )
+        )
+        {
+            return 2;
+        }
+    }
+    return 0;
 }
 
 1;
