@@ -44,6 +44,13 @@ sub filterOutRegions
     my $filterBED = shift;
     my $outputBED = shift;
     
+    #run windowBED to do this - much quicker than the code below!
+    my $cmd = qq[windowBED -a $inputBED -b $filterBED -w 150 -v > $outputBED];
+    system( $cmd ) == 0 or die qq[Failed to run windowBED: $cmd\n];
+    
+    my $filtered = `wc -l $outputBED`;chomp( $filtered );
+
+=pod    
     my @calls;
     open( my $ifh, $inputBED ) or die qq[Failed to open $inputBED: $!\n];
     while( my $line = <$ifh> ){chomp($line);push(@calls,$line);}
@@ -89,7 +96,7 @@ sub filterOutRegions
     open( my $ofh, qq[>$outputBED] ) or die $!;
     foreach my $call ( @calls ){if(defined( $call ) ){ print $ofh qq[$call\n]; } }
     close( $ofh );
-    
+=cut    
     return $filtered;
 }
 
