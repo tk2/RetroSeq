@@ -32,7 +32,7 @@ my $DEFAULT_ID = 80;
 my $DEFAULT_LENGTH = 36;
 my $DEFAULT_ANCHORQ = 20;
 my $DEFAULT_MAX_DEPTH = 200;
-my $DEFAULT_READS = 5;
+my $DEFAULT_READS = 10;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 120;
 my $DEFAULT_MIN_CLUSTER_READS = 2;
@@ -549,13 +549,42 @@ sub _findInsertions
         die qq[Cant find any inputs files with prefix $input*\n] if( ! @files || @files == 0 );
     }
     
+    #parse the region
+    my ($chr, $start, $end) = (undef, undef, undef);
+    if( defined( $region ) )
+    {
+        if( $region =~ /^([A-Za-z0-9]+):([0-9]+)-([0-9]+)$/ )
+        {
+            $chr = $1;$start=$2;$end=$3;
+            print qq[Restricting calling to region: $region\n];
+        }
+        else{$chr = $region;print qq[Restricting calling to Chr: $chr\n];}
+    }
+    
     #merge the discovery files together and sort them by type, chr, position cols
     foreach my $file( @files )
     {
-        system(qq[cat $file >> $$.merge.PE.tab]) == 0 or die qq[Failed to merge SR input files\n];
+        system(qq[cat $file >> $$.merge.PE.tab]) == 0 or die qq[Failed to merge PE input files\n];
     }
     
-    system( qq[sort -k4,4d -k1,1d -k2,2n $$.merge.PE.tab | uniq > $$.merge.PE.sorted.tab] ) == 0 or die qq[Failed to sort merged SR input files\n];
+    my $sortedCandidates = qq[$$.merge.PE.sorted.tab];
+    system( qq[sort -k4,4d -k1,1d -k2,2n $$.merge.PE.tab | uniq > $sortedCandidates] ) == 0 or die qq[Failed to sort merged SR input files\n];
+    
+    if( $chr )
+    {
+        if( $start && $end )
+        {
+            system(qq[echo -e "$chr\t$start\t$end" > $$.region.bed ]) == 0 or die qq[failed to defined region];
+            #system(qq[windowBED -a $sortedCandidates -b $$.region.bed > $$.merge.PE.sorted.region.tab]) == 0 or die qq[Failed to extract region from reads];
+            system(qq/awk '\$1==$chr&&\$2>$start&&\$3<$end' $sortedCandidates > $$.merge.PE.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
+            $sortedCandidates = qq[$$.merge.PE.sorted.region.tab];
+        }
+        else #just the chr is defined
+        {
+            system(qq/awk '\$1==$chr' $sortedCandidates > $$.merge.PE.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
+            $sortedCandidates = qq[$$.merge.PE.sorted.region.tab];
+        }
+    }
     
     my $ignoreRGsFormatted = undef;
     if( $ignoreRGs )
@@ -576,19 +605,7 @@ sub _findInsertions
         close( $tfh );
     }
     
-    #parse the region
-    my ($chr, $start, $end) = (undef, undef, undef);
-    if( defined( $region ) )
-    {
-        if( $region =~ /^([A-Za-z0-9]+):([0-9]+)-([0-9]+)$/ )
-        {
-            $chr = $1;$start=$2;$end=$3;
-            print qq[Restricting calling to region: $region\n];
-        }
-        else{$chr = $region;print qq[Restricting calling to Chr: $chr\n];}
-    }
-    
-    open( my $tfh, qq[$$.merge.PE.sorted.tab] ) or die qq[Failed to open merged tab file: $!\n];
+    open( my $tfh, $sortedCandidates ) or die qq[Failed to open merged tab file: $!\n];
     my %typeBEDFiles;
     my $currentType = '';
     my $cfh;
@@ -616,7 +633,7 @@ sub _findInsertions
                 #convert to a region BED (removing any candidates with very low numbers of reads)
                 print qq[$currentType Calling initial rough boundaries of insertions....\n];
                 my $rawTECalls1 = qq[$$.raw_calls.1.$currentType.tab];
-                my $numRegions = Utilities::convertToRegionBedPairs( qq[$$.$currentType.pe_anchors.bed], $DEFAULT_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, 1, 0, $rawTECalls1 );
+                my $numRegions = Utilities::convertToRegionBedPairsWindowBED( qq[$$.$currentType.pe_anchors.bed], $DEFAULT_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, 1, 0, $rawTECalls1 );
                 
                 if( $numRegions == 0 )
                 {
@@ -627,18 +644,6 @@ sub _findInsertions
                     print qq[PE Call: $currentType\n];
                     open( $cfh, qq[>$$.$currentType.pe_anchors.bed] ) or die $!;
                     next;
-                }
-                
-                if( %filterBEDs )
-                {
-                    print qq[Filtering reference elements for: $currentType\n];
-                    #remove the regions specified in the exclusion BED file
-                    my $filtered = qq[$$.raw_calls.1.filtered.$currentType.tab];
-                    if( $filterBEDs{ $currentType } )
-                    {
-                        Utilities::filterOutRegions( $rawTECalls1, $filterBEDs{ $currentType }, $filtered );
-                        $rawTECalls1 = $filtered;
-                    }
                 }
                 
                 #remove extreme depth calls
@@ -652,8 +657,39 @@ sub _findInsertions
                 my $hetCalls = qq[$$.raw_calls.3.$currentType.het.bed];
                 _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
                 
-                $typeBEDFiles{ $currentType }{hom} = $homCalls if( -f $homCalls && -s $homCalls > 0 );
-                if( $hets && -f $hetCalls && -s $hetCalls > 0 ){$typeBEDFiles{ $currentType }{het} = $hetCalls;}
+                #remove close duplicated calls
+                my $rmdupHomCalls = qq[$$.raw_calls.3.$currentType.hom.rmdup.bed];
+                Utilities::_removeDups( $homCalls, $rmdupHomCalls );
+                $typeBEDFiles{ $currentType }{hom} = $rmdupHomCalls if( -f $rmdupHomCalls && -s $rmdupHomCalls > 0 );
+                
+                my $rmdupHetCalls;
+                if( $hets && -f $hetCalls && -s $hetCalls > 0 )
+                {
+                    $rmdupHetCalls = qq[$$.raw_calls.3.$currentType.het.rmdup.bed];
+                    Utilities::_removeDups( $hetCalls, $rmdupHetCalls );
+                    $typeBEDFiles{ $currentType }{het} = $rmdupHetCalls;
+                }
+                
+                #if a bed file of places to filter out was provided e.g. ref TEs
+                if( %filterBEDs )
+                {
+                    print qq[Filtering reference elements for: $currentType\n];
+                    
+                    #remove the regions specified in the exclusion BED file
+                    my $filtered = qq[$rmdupHomCalls.refFiltered];
+                    if( $filterBEDs{ $currentType } )
+                    {
+                        Utilities::filterOutRegions( $rmdupHomCalls, $filterBEDs{ $currentType }, $filtered );
+                        $typeBEDFiles{ $currentType }{hom} = $filtered;
+                        
+                        if( $hets && -f $rmdupHetCalls && -s $rmdupHetCalls > 0 )
+                        {
+                            $filtered = qq[$rmdupHetCalls.refFiltered];
+                            Utilities::filterOutRegions( $rmdupHetCalls, $filterBEDs{ $currentType }, $filtered );
+                            $typeBEDFiles{ $currentType }{het} = $filtered;
+                        }
+                    }
+                }
                 
                 #remove the temporary files for this 
                 if( $clean )
@@ -679,7 +715,7 @@ sub _findInsertions
         }
     }
     close( $tfh );
-    close( $cfh );
+    close( $cfh ) if( $cfh );
     
     if( $novel )
     {
@@ -772,16 +808,45 @@ sub _findInsertionsSR
         die qq[Cant find any inputs files with prefix $input*\n] if( ! @files || @files == 0 );
     }
     
+    #parse the region
+    my ($chr, $start, $end) = (undef, undef, undef);
+    if( defined( $region ) )
+    {
+        if( $region =~ /^([A-Za-z0-9]+):([0-9]+)-([0-9]+)$/ )
+        {
+            $chr = $1;$start=$2;$end=$3;
+            print qq[Restricting calling to region: $region\n];
+        }
+        else{$chr = $region;print qq[Restricting calling to Chr: $chr\n];}
+    }
+    
     #merge the SR discovery files together and sort them by type, chr, position cols
     foreach my $file( @files )
     {
         system(qq[cat $file >> $$.merge.SR.tab]) == 0 or die qq[Failed to merge SR input files\n];
     }
     
-    system( qq[sort -k4,4d -k1,1d -k2,2n $$.merge.SR.tab | uniq > $$.merge.SR.sorted.tab] ) == 0 or die qq[Failed to sort merged SR input files\n];
+    my $sortedCandidates = qq[$$.merge.SR.sorted.tab];
+    system( qq[sort -k4,4d -k1,1d -k2,2n $$.merge.SR.tab | uniq > $sortedCandidates] ) == 0 or die qq[Failed to sort merged SR input files\n];
+    
+    if( $chr )
+    {
+        if( $start && $end )
+        {
+            system(qq[echo -e "$chr\t$start\t$end" > $$.region.bed ]) == 0 or die qq[failed to defined region];
+            #system(qq[windowBED -a $sortedCandidates -b $$.region.bed > $$.merge.SR.sorted.region.tab]) == 0 or die qq[Failed to extract region from reads];
+            system(qq/awk '\$1==$chr&&\$2>$start&&\$3<$end' $sortedCandidates > $$.merge.SR.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
+            $sortedCandidates = qq[$$.merge.SR.sorted.region.tab];
+        }
+        else #just the chr is defined
+        {
+            system(qq/awk '\$1==$chr' $sortedCandidates > $$.merge.SR.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
+            $sortedCandidates = qq[$$.merge.SR.sorted.region.tab];
+        }
+    }
     
     #grab the reads that didnt match any TE into a separate file (to use as evidence when calling individual elements) - NEED to adjust the coords to the actual breakpoints first
-    open( my $tfh, qq[$$.merge.SR.sorted.tab] ) or die qq[failed to open candidates file: $!\n];
+    open( my $tfh, $sortedCandidates ) or die qq[failed to open candidates file: $!\n];
     open( my $ufh, qq[>$$.merge.SR.unknown.tab] );
     while( my $line = <$tfh> )
     {
@@ -795,7 +860,7 @@ sub _findInsertionsSR
     close( $tfh );
     close( $ufh );
     
-    open( $tfh, qq[$$.merge.SR.sorted.tab] ) or die qq[Failed to open merged tab file: $!\n];
+    open( $tfh, qq[$sortedCandidates] ) or die qq[Failed to open merged tab file: $!\n];
     my %typeBEDFiles;
     my $currentType = '';
     my $cfh;
@@ -821,14 +886,20 @@ sub _findInsertionsSR
                 
                 #call the regions
                 my $minReads = $currentType eq 'unknown' ? $DEFAULT_SR_MIN_UNKNOWN_CLUSTER_READS : $DEFAULT_SR_MIN_CLUSTER_READS;
-                if( $readCount > 0 && Utilities::convertToRegionBedPairs( qq[$$.$currentType.sr_anchors.sorted.bed], $minReads, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_SR_CLUSTER_DIST, 0, 1, qq[$$.$currentType.sr_calls.bed] ) > 0 )
+                if( $readCount > 0 && Utilities::convertToRegionBedPairsWindowBED( qq[$$.$currentType.sr_anchors.sorted.bed], $minReads, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_SR_CLUSTER_DIST, 0, 1, qq[$$.$currentType.sr_calls.bed] ) > 0 )
                 {
                     my $bedCalls = qq[$$.$currentType.sr_calls.bed];
-                    if( %filterBEDs )
+                    
+                    #remove duplicate calls (if any)
+                    Utilities::_removeDups( $bedCalls, qq[$$.$currentType.sr_calls.rmdup.bed] );
+                    $bedCalls = qq[$$.$currentType.sr_calls.rmdup.bed];
+                    $typeBEDFiles{ $currentType }{hom} = $bedCalls if( -f $bedCalls && -s $bedCalls > 0 );
+                    
+                    if( %filterBEDs && $typeBEDFiles{ $currentType }{hom} )
                     {
                         print qq[Filtering reference elements for: $currentType\n];
                         #remove the regions specified in the exclusion BED file
-                        my $filtered = qq[$$.$currentType.sr_calls.filtered.bed];
+                        my $filtered = qq[$$.$currentType.sr_calls.rmdup.filtered.bed];
                         if( $filterBEDs{ $currentType } )
                         {
                             Utilities::filterOutRegions( $bedCalls, $filterBEDs{ $currentType }, $filtered );
@@ -863,7 +934,7 @@ sub _findInsertionsSR
         }
     }
     close( $tfh );
-    close( $cfh );
+    close( $cfh ) if( $cfh );
     
     if( $novel )
     {

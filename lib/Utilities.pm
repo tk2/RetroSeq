@@ -45,7 +45,7 @@ sub filterOutRegions
     my $outputBED = shift;
     
     #run windowBED to do this - much quicker than the code below!
-    my $cmd = qq[windowBED -a $inputBED -b $filterBED -w 150 -v > $outputBED];
+    my $cmd = qq[windowBED -a $inputBED -b $filterBED -w 100 -v > $outputBED];
     system( $cmd ) == 0 or die qq[Failed to run windowBED: $cmd\n];
     
     my $filtered = `wc -l $outputBED`;chomp( $filtered );
@@ -211,15 +211,15 @@ sub testBreakPoint
 	my $numSameOrientation = 0;
 	my $cmd = $cmdpre.($refPos-$lhsWindow).qq[-].($refPos+$rhsWindow).qq[ | ].(defined($ignoreRGs) ? qq[ grep -v -f $ignoreRGs |] : qq[]);
 	open( my $tfh, $cmd ) or die $!;
+	my $totalLFwd = 0; my $totalRRev = 0;my $totalSup = 0;
 	while( my $sam = <$tfh> )
 	{
 	    chomp( $sam );
 	    my @s = split( /\t/, $sam );
 	    
 	    my $supporting = isSupportingClusterRead( $s[ 1 ], $s[ 8 ], $s[ 4 ], $minMapQ, $minSoftClip, $s[ 5 ] );
-	    
 	    if( $supporting  == 2 )
-	    {
+	    {$totalSup++;
             if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
             {
                 if( $s[ 3 ] < $refPos ){$lhsRevBlue++;}else{$rhsRevBlue++;$firstBluePos = $s[ 3 ] if( $s[ 3 ] < $firstBluePos );}
@@ -231,7 +231,7 @@ sub testBreakPoint
         }
         #        the mate is unmapped
         elsif( $supporting == 1 )
-        {
+        {$totalSup++;
             if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
             {
                 if( $s[ 3 ] < $refPos ){$lhsRevGreen++;}else{$rhsRevGreen++;}
@@ -248,7 +248,6 @@ sub testBreakPoint
             $numSameOrientation ++;
         }
     }
-    
     unlink( qq[/tmp/$$.region.bam] );
     
     #if it appears to be an inversion breakpoint
@@ -262,7 +261,6 @@ sub testBreakPoint
     #check there are supporting read pairs either side of the depth minima
     my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
     my $dist = $firstBluePos - $lastBluePos;
-    
     my $minBlue = int($minReads / 2);
     
     print $dfh qq[TEST: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
@@ -279,7 +277,7 @@ sub testBreakPoint
         {
             return [$NOT_ENOUGH_READS_CLUSTER, $callString, 0];
         }
-        elsif( $lhsFwd < $minReads || $rhsRev < $minReads )
+        elsif( $lhsFwd < ($minReads/2) || $rhsRev < ($minReads/2) )
         {
             print qq[Code: $NOT_ENOUGH_READS_FLANKS\t$lhsFwd\t$rhsRev\n];
             return [$NOT_ENOUGH_READS_FLANKS, $callString, 0];
@@ -560,9 +558,16 @@ sub getCandidateBreakPointsDirVote
     
     open( my $ifh, $cmd ) or die qq[failed on samtools cmd: $cmd\n];
     my $mpileupOut = <$ifh>;
-    @s = split( /\t/, $mpileupOut );
     
-    return [$maxPos, length($s[4]) ]; #also need to return the size of the window to the two clusters either side of the breakpoint
+    if( $mpileupOut )
+    {
+        @s = split( /\t/, $mpileupOut );
+        return [$maxPos, length($s[4]) ]; #also need to return the size of the window to the two clusters either side of the breakpoint
+    }
+    else
+    {
+        return [$maxPos,5000];
+    }
 }
 
 #cluster the reads into fwd clusters and rev clusters
@@ -831,6 +836,183 @@ print abs( $revStartPositions[ $revStartPositionsIndex ] - $fwdEndPositions[ $fw
 	return $regionsCalled;
 }
 
+#cluster the reads into fwd clusters and rev clusters
+sub convertToRegionBedPairsWindowBED
+{
+    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 8;
+    
+    my $bedIn = shift;
+	my $minReads = shift;
+	my $id = shift;
+	my $max_intra_gap = shift;
+	my $max_fwd_rev_gap = shift;
+	my $doDupRemoval = shift; #1 to not count anchors starting at same pos, 0 to use all anchors
+	my $allowOneSided = shift; #allow calls that only have support from one side
+	my $outputbed = shift;
+	
+	#dup removal - uniq fwd start pos, uniq rev end pos
+	my %startPosFwd;
+	my %endPosRev;
+	
+	open( my $cfh, $bedIn ) or die $!;
+	my $regionStartFwd = 0;
+	my $regionEndFwd = 0;
+	my $regionChrFwd = undef;
+	my $reads_in_regionFwd = 0;
+	my $reads_with_idFwd = 0; #number of reads that align to the TE element being called here (i.e. the input could be a mixture of unknown and reads that align to the TE type being called)
+	
+	my $regionStartRev = 0;
+	my $regionEndRev = 0;
+	my $regionChrRev = undef;
+	my $reads_in_regionRev = 0;
+	my $reads_with_idRev = 0;
+	open( my $posfh, qq[>$$.$id.pos.bed] ) or die qq[failed to create temp POS file\n];
+	open( my $negfh, qq[>$$.$id.neg.bed] ) or die qq[failed to create temp NEG file\n];
+	while( my $line = <$cfh> )
+	{
+	    chomp( $line );
+	    my @s = split( /\t/, $line ); #chr, start, stop, name, orientation, mate orientation
+	    if( $s[ 4 ] eq '+' )
+	    {
+	        if( ! defined $regionChrFwd )
+            {
+                $regionStartFwd = $s[ 1 ];
+                $regionEndFwd = $s[ 2 ];
+                $regionChrFwd = $s[ 0 ];
+                $reads_in_regionFwd = 1;
+                $startPosFwd{ $s[ 1 ] } = 1;
+                $reads_with_idFwd ++ if( $s[ 3 ] eq $id );
+            }
+            elsif( $s[ 0 ] ne $regionChrFwd ) #new chr
+            {
+                #done - call the region
+                my $size = $regionEndFwd - $regionStartFwd; $size = 1 unless $size > 0;
+                print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t+\t$reads_in_regionFwd\n] if( $reads_in_regionFwd >= $minReads && $reads_with_idFwd >= ( $minReads * 0.5 ) );
+                
+                $reads_in_regionFwd = 1;
+                $regionStartFwd = $s[ 1 ];
+                $regionEndFwd = $s[ 2 ];
+                $regionChrFwd = $s[ 0 ];
+                
+                %startPosFwd = ();
+                $reads_with_idFwd = 0;
+                $startPosFwd{ $s[ 1 ] } = 1;
+                $reads_with_idFwd ++ if( $s[ 3 ] eq $id );
+            }
+            elsif( $s[ 1 ] - $regionEndFwd > $max_intra_gap )
+            {
+                #call the region
+                print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t+\t$reads_in_regionFwd\n] if( $reads_in_regionFwd >= $minReads && $reads_with_idFwd >= ( $minReads * 0.5 ) );
+print "POS $regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t$reads_in_regionFwd\t$reads_with_idFwd\n"  if( $reads_in_regionFwd >= $minReads && $reads_with_idFwd >= ( $minReads * 0.5 ) );
+                
+                $reads_in_regionFwd = 1;
+                $regionStartFwd = $s[ 1 ];
+                $regionChrFwd = $s[ 0 ];
+                $regionEndFwd = $s[ 2 ];
+                
+                %startPosFwd = ();
+                $reads_with_idFwd = 0;
+                $startPosFwd{ $s[ 1 ] } = 1;
+                $reads_with_idFwd ++ if( $s[ 3 ] eq $id );
+            }
+            else
+            {
+                #read is within the region - increment
+                if( $doDupRemoval == 0 || ( $doDupRemoval == 1 && ! defined( $startPosFwd{ $s[ 1 ] } ) ) )
+                {
+                    $reads_in_regionFwd ++;
+                    $reads_with_idFwd ++ if( $s[ 3 ] eq $id );
+                    $regionEndFwd = $s[ 2 ];
+                    $startPosFwd{ $s[ 1 ] } = 1;
+                }
+            }
+	    }else
+	    {
+	        if( ! defined $regionChrRev )
+            {
+                $regionStartRev = $s[ 1 ];
+                $regionEndRev = $s[ 2 ];
+                $regionChrRev = $s[ 0 ];
+                $reads_in_regionRev = 1;
+                $endPosRev{ $s[ 2 ] } = 1;
+                $reads_with_idRev ++ if( $s[ 3 ] eq $id );
+            }
+            elsif( $s[ 0 ] ne $regionChrRev ) #on next chr
+            {
+                #done - call the region
+                print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t-\t$reads_in_regionRev\n] if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
+                
+                $reads_in_regionRev = 1;
+                $regionStartRev = $s[ 1 ];
+                $regionEndRev = $s[ 2 ];
+                $regionChrRev = $s[ 0 ];
+                
+                %endPosRev = ();
+                $reads_with_idRev = 0;
+                $endPosRev{ $s[ 2 ] } = 1;
+                $reads_with_idRev ++ if( $s[ 3 ] eq $id );
+            }
+            elsif( $s[ 1 ] - $regionEndRev > $max_intra_gap )
+            {
+                #call the region
+                print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t-\t$reads_in_regionRev\n] if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
+print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionRev\t$reads_with_idRev\n" if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
+                
+                $reads_in_regionRev = 1;
+                $regionStartRev = $s[ 1 ];
+                $regionEndRev = $s[ 2 ];
+                $regionChrRev = $s[ 0 ];
+                
+                %endPosRev = ();
+                $reads_with_idRev = 0;
+                $endPosRev{ $s[ 1 ] } = 1;
+            }
+            else
+            {
+                #read is within the region - increment
+                if( $doDupRemoval == 0 || ( $doDupRemoval == 1 && ! defined( $endPosRev{ $s[ 2 ] } ) ) )
+                {
+                    $reads_in_regionRev ++;
+                    $reads_with_idRev ++ if( $s[ 3 ] eq $id );
+                    $regionEndRev = $s[ 2 ];
+                    $endPosRev{ $s[ 2 ] } = 1;
+                }
+            }
+	    }
+	}
+	
+	print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t+\t$reads_in_regionFwd\n] if( $reads_in_regionFwd >= $minReads && $reads_with_idFwd >= ( $minReads * 0.5 ) );
+	print "POS $regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t$reads_in_regionFwd\n" if( $reads_in_regionFwd >= $minReads && $reads_with_idFwd >= ( $minReads * 0.5 ) );
+	print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t-\t$reads_in_regionRev\n] if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
+	print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionRev\n" if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
+    
+	close( $posfh );close( $negfh );
+	
+	my $updownWindow = $max_fwd_rev_gap / 2;
+	system( qq[windowBED -a $$.$id.pos.bed -b $$.$id.neg.bed -l $updownWindow -r $updownWindow > $$.$id.wb.out] ) == 0 or die qq[windowBED failed\n];
+	
+	#now pair up the clusters by closest end/start positions - use windowBED to cluster
+	open( my $ofh, qq[>$outputbed] ) or die $!;
+	open( my $ifh, qq[$$.$id.wb.out] ) or die qq[failed to read windowBED output: $!];
+	my $regionsCalled = 0;
+#	my $currentStart = -1; #if there are two hits for this cluster - pick the closest match
+	while( my $line = <$ifh> )
+	{
+	    my @s = split( /\t/, $line );
+	    
+#	    if( $currentStart == -1 ){}
+	    #do some sanity checks??
+	    my $totalReads = $s[ 5 ] + $s[ 11 ];
+	    my $end = $s[2]>$s[8]?$s[2]:$s[8];
+	    my $start = $s[1]<$s[7]?$s[1]:$s[7];
+	    print $ofh qq[$s[0]\t$start\t$end\t$s[3]\t$totalReads\t$PASS\n];
+	    $regionsCalled ++;
+	}
+	close( $ofh );
+	
+	return $regionsCalled;
+}
+
 sub annotateCallsBED
 {
     die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 2;
@@ -1064,7 +1246,6 @@ sub isSupportingClusterRead
     #            read is not a duplicate        map quality is >= minimum
     if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $mapQ >= $minQual )
     {
-        #        the mate is mapped                       or mate isnt mapped correctly
         #           read is mapped                       mate is unmapped
         if( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ( $flag & $$BAMFLAGS{'mate_unmapped'} ) )
         {
@@ -1074,13 +1255,52 @@ sub isSupportingClusterRead
         elsif( ( defined( $minSoftClip ) && $minSoftClip > 0 && ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ( $flag & $$BAMFLAGS{'read_paired'} ) && abs( $insert ) < 3000 && ($cigar=~tr/S/S/) == 1 && $cigar =~ /(\d+)(S)/ && $1 > $minSoftClip )
             ||
             #            read is mapped                         mate is mapped                                  not paired correctly                has large enough deviation from expected ins size (short libs assumed)
-            ( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag & $$BAMFLAGS{'read_paired'} ) && abs( $insert ) > 30000 )
+            ( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag & $$BAMFLAGS{'read_paired'} ) && ( abs( $insert ) > 30000 || $insert == 0 ) )
         )
         {
             return 2;
         }
     }
     return 0;
+}
+
+sub _removeDups
+{
+    my $input = shift;
+    my $output = shift;
+    
+    open( my $ifh, $input ) or die $!;
+    open( my $ofh, qq[>$output] ) or die $!;
+    my $currentStart = -1;
+    my $currentScore = -1;
+    my $currentBest;
+    while( my $l = <$ifh> )
+    {
+        chomp( $l );
+        my @s = split( /\t/, $l );
+        
+        if( $currentStart == -1 || abs( $s[ 1 ] - $currentStart ) > 200 )
+        {
+            if( $currentStart != -1 )
+            {
+                print $ofh qq[$currentBest\n];
+            }
+            
+            $currentStart = $s[ 2 ];
+            $currentBest = $l;
+            $currentScore = $s[ 4 ];
+        }
+        elsif( $s[ 4 ] > $currentScore )
+        {
+            $currentBest = $l;
+            $currentScore = $s[ 4 ];
+        }
+    }
+    print $ofh qq[$currentBest\n] if( defined( $currentBest ) );
+    close( $ifh );
+    close( $ofh );
+    
+    return 1;
 }
 
 1;
