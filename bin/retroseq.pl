@@ -92,7 +92,7 @@ GetOptions
     'srmode'        =>  \$srmode,
     'minclip=i'     =>  \$minSoftClip,
     'srcands=s'     =>  \$srOutputFile,
-    'srInput=s'     =>  \$srInputFile,
+    'srinput=s'     =>  \$srInputFile,
     'novel'         =>  \$callNovel,
     'h|help'        =>  \$help,
 );
@@ -562,13 +562,11 @@ sub _findInsertions
     }
     
     #merge the discovery files together and sort them by type, chr, position cols
+    my $merged = qq[$$.merge.PE.tab];
     foreach my $file( @files )
     {
         system(qq[cat $file >> $$.merge.PE.tab]) == 0 or die qq[Failed to merge PE input files\n];
     }
-    
-    my $sortedCandidates = qq[$$.merge.PE.sorted.tab];
-    system( qq[sort -k4,4d -k1,1d -k2,2n $$.merge.PE.tab | uniq > $sortedCandidates] ) == 0 or die qq[Failed to sort merged SR input files\n];
     
     if( $chr )
     {
@@ -576,15 +574,18 @@ sub _findInsertions
         {
             system(qq[echo -e "$chr\t$start\t$end" > $$.region.bed ]) == 0 or die qq[failed to defined region];
             #system(qq[windowBED -a $sortedCandidates -b $$.region.bed > $$.merge.PE.sorted.region.tab]) == 0 or die qq[Failed to extract region from reads];
-            system(qq/awk '\$1==$chr&&\$2>$start&&\$3<$end' $sortedCandidates > $$.merge.PE.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
-            $sortedCandidates = qq[$$.merge.PE.sorted.region.tab];
+            system(qq/awk '\$1==$chr&&\$2>$start&&\$3<$end' $merged > $$.merge.PE.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
+            $merged = qq[$$.merge.PE.region.tab];
         }
         else #just the chr is defined
         {
-            system(qq/awk '\$1==$chr' $sortedCandidates > $$.merge.PE.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
-            $sortedCandidates = qq[$$.merge.PE.sorted.region.tab];
+            system(qq/awk '\$1==$chr' $merged > $$.merge.PE.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
+            $merged = qq[$$.merge.PE.region.tab];
         }
     }
+    
+    my $sortedCandidates = qq[$$.merge.PE.sorted.tab];
+    system( qq[sort -k4,4d -k1,1d -k2,2n $merged | uniq > $sortedCandidates] ) == 0 or die qq[Failed to sort merged SR input files\n];
     
     my $ignoreRGsFormatted = undef;
     if( $ignoreRGs )
@@ -646,6 +647,17 @@ sub _findInsertions
                     next;
                 }
                 
+                #if a bed filter file of ref types was provided - then apply te filter now to reduce number of calls to test
+                if( %filterBEDs && $filterBEDs{ $currentType } )
+                {
+                    print qq[Filtering reference elements for: $currentType\n];
+                    
+                    #remove the regions specified in the exclusion BED file
+                    my $rawTECalls1Filtered = qq[$$.raw_calls.1.$currentType.filtered.tab];
+                    Utilities::filterOutRegions( $rawTECalls1, $filterBEDs{ $currentType }, $rawTECalls1Filtered );
+                    $rawTECalls1 = $rawTECalls1Filtered;
+                }
+                
                 #remove extreme depth calls
                 print qq[Removing calls with extremely high depth (>$depth)....\n];
                 my $rawTECalls2 = qq[$$.raw_calls.2.$currentType.tab];
@@ -655,6 +667,7 @@ sub _findInsertions
                 print qq[Filtering and refining candidate regions into calls....\n];
                 my $homCalls = qq[$$.raw_calls.3.$currentType.hom.bed];
                 my $hetCalls = qq[$$.raw_calls.3.$currentType.het.bed];
+                
                 _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
                 
                 #remove close duplicated calls
@@ -669,7 +682,7 @@ sub _findInsertions
                     Utilities::_removeDups( $hetCalls, $rmdupHetCalls );
                     $typeBEDFiles{ $currentType }{het} = $rmdupHetCalls;
                 }
-                
+=pod                
                 #if a bed file of places to filter out was provided e.g. ref TEs
                 if( %filterBEDs )
                 {
@@ -690,7 +703,7 @@ sub _findInsertions
                         }
                     }
                 }
-                
+=cut                
                 #remove the temporary files for this 
                 if( $clean )
                 {

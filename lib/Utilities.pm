@@ -3,6 +3,7 @@ package Utilities;
 use strict;
 use warnings;
 use Carp;
+use File::Basename;
 
 my $FILTER_WINDOW = 200;
 my $BREAKPOINT_WINDOW = 250;
@@ -1099,8 +1100,8 @@ sub getBAMSampleName
     }
     else
     {
-        print qq[WARNING: Cant determine sample name from BAM - setting to unknown\n];
-        $sampleName = 'unknown';
+        print qq[WARNING: Cant determine sample name from BAM - setting to file name\n];
+        $sampleName = basename( $bams[ 0 ] );
     }
     
     return $sampleName; 
