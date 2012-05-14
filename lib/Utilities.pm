@@ -1159,7 +1159,6 @@ sub checkBinary
     if( $version )
     {
         my @v = split( /\./, $version );
-        my $hasOutput = 0;
         open( my $bfh, qq[ $binary 2>&1 | ] ) or die "failed to run $binary\n";
         while(<$bfh>)
         {
@@ -1170,11 +1169,11 @@ sub checkBinary
                 {
                     die qq[\nERROR: $binary version $version is required - your version is $1.$2.$3\n];
                 }
-                $hasOutput = 1;
+                return;
             }
         }
         close( $bfh );
-        die qq[ERROR: Cant determine version number of $binary\n] unless $hasOutput;
+        die qq[ERROR: Cant determine version number of $binary\n];
     }
 }
 
