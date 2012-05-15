@@ -1376,14 +1376,7 @@ sub _outputCalls
                 $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],$dir] };
                 $out{FORMAT} = ['GT', 'GQ', 'FL'];
                 
-                if( $flag == $Utilities::PASS )
-                {
-                    $out{gtypes}{$sample}{GT} = qq[<INS:ME>/<INS:ME>];
-                }
-                else
-                {
-                    $out{gtypes}{$sample}{GT} = qq[0/0];
-                }
+                $out{gtypes}{$sample}{GT} = qq[<INS:ME>/<INS:ME>];
                 $out{gtypes}{$sample}{GQ} = qq[$s[4]];
                 $out{gtypes}{$sample}{FL} = $flag;
                 
@@ -1422,14 +1415,7 @@ sub _outputCalls
                 $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],$dir] };
                 $out{FORMAT} = ['GT','GQ', 'FL'];
                 
-                if( $flag == $Utilities::PASS )
-                {
-                    $out{gtypes}{$sample}{GT} = qq[$refbase/<INS:ME>];
-                }
-                else
-                {
-                    $out{gtypes}{$sample}{GT} = qq[0/0];
-                }
+                $out{gtypes}{$sample}{GT} = qq[$refbase/<INS:ME>];
                 $out{gtypes}{$sample}{GQ} = qq[$s[4]];
                 $out{gtypes}{$sample}{FL} = $flag;
                 
