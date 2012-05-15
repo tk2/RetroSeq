@@ -35,7 +35,7 @@ my $DEFAULT_MAX_DEPTH = 200;
 my $DEFAULT_READS = 10;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 120;
-my $DEFAULT_MIN_CLUSTER_READS = 2;
+my $DEFAULT_MIN_CLUSTER_READS = 5;
 my $DEFAULT_SR_MIN_CLUSTER_READS = 3;
 my $DEFAULT_SR_MIN_UNKNOWN_CLUSTER_READS = 10;
 my $DEFAULT_MAX_CLUSTER_DIST = 4000;
@@ -60,7 +60,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $srmode, $minSoftClip, $srOutputFile, $srInputFile, $callNovel, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $srmode, $minSoftClip, $srOutputFile, $srInputFile, $callNovel, $refTEs, $excludeRegionsDis, $doAlign, $help);
 
 GetOptions
 (
@@ -94,13 +94,15 @@ GetOptions
     'srcands=s'     =>  \$srOutputFile,
     'srinput=s'     =>  \$srInputFile,
     'novel'         =>  \$callNovel,
+    'refTEs=s'      =>  \$refTEs,
+    'exd=s'         =>  \$excludeRegionsDis,
+    'align'         =>  \$doAlign,
     'h|help'        =>  \$help,
 );
 
 print <<MESSAGE;
 
 RetroSeq: A tool for discovery and genotyping of transposable elements from short read alignments
-Version: $Utilities::VERSION
 Author: Thomas Keane (thomas.keane\@sanger.ac.uk)
 
 MESSAGE
@@ -110,7 +112,6 @@ Usage: $0 -<command> options
 
             -discover       Takes a BAM and a set of reference TE (fasta) and calls candidate supporting read pairs (BED output)
             -call           Takes multiple output of discovery stage and a BAM and outputs a VCF of TE calls
-            -genotype       Input is a VCF of TE calls and a set of sample BAMs, output is a new VCF with genotype calls for new samples
             
 NOTE: $0 requires samtools, bcftools, exonerate, unix sort to be in the default path
 
@@ -126,6 +127,7 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q 
     -bam        BAM file of paired reads mapped to reference genome
     -eref       Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta)
     -output     Output file to store candidate supporting reads (required for calling step)
+    [-refTEs    Tab file with TE type and BED file of reference elements. These will be used to quickly assign discordant reads the TE types and avoid alignment. Using this will speed up discovery dramatically.]
     [-srmode]   Search for split reads in the BAM file
     [-minclip]  Minimum length of soft clippped portion of read to be considered for split-read analysis. Default is 30bp.
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
@@ -133,10 +135,12 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q 
     [-id        Minimum percent ID for a match of a read to the transposon references. Default is 90.]
     [-len       Minimum length of a hit to the transposon references. Default is 36bp.]
     [-rgs       Comma separated list of readgroups to operate on. Default is all.]
+    [-exd       Fofn of BED files of regions where discordant mates falling into will be excluded e.g. simple repeats, centromeres, telomeres]
+    [-align     Do the computational expensive exonerate PE discordant mate alignment step]
     
 USAGE
     
-    croak qq[Cant find BAM file: $bam] unless -f $bam;
+    croak qq[Cant find BAM file: $bam] unless -f $bam || -l $bam;
     croak qq[Cant find TE tab file: $eRefFofn] unless -f $eRefFofn;
     
     my $erefs = _tab2Hash( $eRefFofn );
@@ -169,7 +173,7 @@ USAGE
     Utilities::checkBinary( q[samtools], qq[0.1.16] );
     Utilities::checkBinary( q[exonerate], qq[2.2.0] );
     
-    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $minSoftClip, $srOutputFile, $clean );
+    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $minSoftClip, $srOutputFile, $refTEs, $excludeRegionsDis, $doAlign, $clean );
 }
 elsif( $call )
 {
@@ -194,7 +198,7 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-s
         
 USAGE
     
-    croak qq[Cant find BAM or BAM fofn: $bam] unless -f $bam;
+    croak qq[Cant find BAM or BAM fofn: $bam] unless -f $bam || -l $bam;
     
     if( ! -f $input )
     {
@@ -235,12 +239,12 @@ USAGE
         while(my $file = <$ifh> )
         {
             chomp( $file );
-            if( -f $file && -f $file.qq[.bai] ){push(@bams, $file);}else{die qq[Cant find BAM input file or BAM index file: $file\n];}
+            if( ( -l $file || -f $file ) && ( -l $file.qq[.bai] || -f $file.qq[.bai] ) ){push(@bams, $file);}else{die qq[Cant find BAM input file or BAM index file: $file\n];}
         }
         print qq[Found ].scalar(@bams).qq[ BAM files\n\n];
         close( $ifh );
     }
-    else{if( -f $bam && -f $bam.qq[.bai] ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
+    else{if( ( -l $bam || -f $bam ) && ( -l $bam.qq[.bai] || -f $bam.qq[.bai] ) ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
     
     my $sampleName = Utilities::getBAMSampleName( \@bams );
     print qq[Calling sample $sampleName\n];
@@ -317,6 +321,9 @@ sub _findCandidates
     my $readgroups = shift;
     my $minSoftClip = shift;
     my $srOutput = shift;
+    my $refTEs = shift;
+    my $excludeRegionsDis = shift;
+    my $doAlign = shift;
     my $clean = shift;
     
     #test for exonerate
@@ -330,10 +337,12 @@ sub _findCandidates
         close( $tfh );
     }
     
-    my $candidatesFasta = qq[$$.candidates.fasta];
+    my $fastaCounter = 0;
+    my $candidatesFasta = qq[$$.candidates.$fastaCounter.fasta];
     my $candidatesBed = qq[$$.candidate_anchors.bed];
+    my $discordantMatesBed = qq[$$.discordant_mates.bed];
     my $clipFasta = qq[$$.clip_candidates.fasta];
-    my %candidates = %{ _getCandidateTEReadNames($bam, $readgroups, $minAnchor, $minSoftClip, $candidatesFasta, $candidatesBed, $clipFasta ) };
+    my %candidates = %{ _getCandidateTEReadNames($bam, $readgroups, $minAnchor, $minSoftClip, $candidatesFasta, $candidatesBed, $clipFasta, $discordantMatesBed ) };
     
     print scalar( keys( %candidates ) ).qq[ candidate reads remain to be found after first pass....\n];
     
@@ -344,6 +353,7 @@ sub _findCandidates
         #now go and get the reads from the bam (annoying have to traverse through the bam a second time - but required for reads where the mate is aligned distantly)
         #also dump out their mates as will need these later as anchors
         open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
+        open( my $dfh, qq[>>$discordantMatesBed] ) or die $!;
         my $currentChr = '';
         while( my $sam = <$bfh> )
         {
@@ -361,15 +371,116 @@ sub _findCandidates
                     if( _sequenceQualityOK( $seq ) )
                     {
                         print $ffh qq[>$name\n$seq\n];
+                        
+                        #record the read position details in the BED file of discordant mates
+                        my $pos = $s[ 3 ];
+                        my $qual = $s[ 4 ];
+                        my $readLen = length( $s[ 9 ] );
+                        my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
+                        print $dfh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\t$qual\n];
                     }
                     delete( $candidates{ $name } );
                 }
             }
             if( $currentChr ne $ref && $ref ne '*' ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
         }
-        close( $ffh );
+        close( $ffh );close( $dfh );
     }
     undef %candidates; #finished with this hash
+    
+    #user provided a file of regions where discordant mates should be excluded
+    if( $excludeRegionsDis && -f $excludeRegionsDis )
+    {
+        #cat the files together
+        open( my $tfh, $excludeRegionsDis ) or die $!;
+        while( my $f = <$tfh> )
+        {
+            chomp( $f );
+            if( ! -f $f ){die qq[ERROR: Cant find exclude file: $f\n];}
+            system(qq[cat $f >> $$.regions_exclude.bed]) == 0 or die qq[Failed to cat files together\n];
+        }
+        close( $tfh );
+        
+        #intersectBED with the mates BED file - collect the readnames
+        system( qq[intersectBED -a $discordantMatesBed -b $$.regions_exclude.bed -f 0.5 -u > $$.discordant_mates.remove.bed] ) == 0 or die qq[Failed to run intersectBED to filter];
+        my %reads;
+        open( my $rfh, qq[intersectBED -a $discordantMatesBed -b $$.regions_exclude.bed -f 0.5 -u | awk -F"\t" '{print \$4}' | ] ) or die $!;
+        while( my $l = <$rfh> ){chomp( $l );$reads{ $l } = 1;}
+        
+        #filter the fasta file on these readnames
+        open( $tfh, $candidatesFasta ) or die $!;
+        $fastaCounter ++; my $newFasta = qq[$$.candidates.$fastaCounter.fasta];
+        open( my $tofh, qq[>$newFasta] ) or die $!;
+        while( my $h = <$tfh> )
+        {
+            chomp( $h );
+            my $seq = <$tfh>;
+            chomp( $seq );
+            if( ! $reads{ substr( $h, 1 ) } )
+            {
+                print $tofh qq[$h\n$seq\n];
+            }
+        }
+        close( $tfh );close( $tofh );
+        $candidatesFasta = $newFasta;
+    }
+    
+    #if the user provided a tab file with mappings of TE type to BED file of locations
+    #then use this info to assign discordant mates to these types
+    if( $refTEs && -f $refTEs )
+    {
+        print qq[Using reference TE locations to assign discordant mates...\n];
+        open( my $rfh, $refTEs ) or die $!;
+        my @types;
+        while( my ($type, $file) = split( /\t/, <$rfh> ) )
+        {
+            chomp( $file );
+            print qq[Screening for hits to: $type\n];
+            system( qq[intersectBED -a $discordantMatesBed -b $file -u -f 0.5 | awk -F"\t" '{print \$4,\$5}' > $$.$type.mates.bed] ) == 0 or die qq[Failed to run intersectBED];
+            
+            #print the mates (i.e. the anchors) of these reads into the discovery output file
+            #first load up the readnames
+            my %reads;
+            open( my $t1fh, qq[$$.$type.mates.bed] ) or die $!;
+            while( my $l = <$t1fh> )
+            {
+                chomp( $l );my @s = split( /\s/, $l );
+                $reads{ $s[0] } = $s[1]; #stick the read names in a hash
+            }
+            close( $t1fh );
+            
+            #now get the reads from the anchors BED file and print them
+            open( my $bfh, qq[$candidatesBed] ) or die $!;
+            open( my $tofh, qq[>>$output] ) or die $!;
+            while( my $l = <$bfh> )
+            {
+                chomp( $l );
+                my @s = split( /\t/, $l );
+                if( $reads{ $s[ 3 ] } )
+                {
+                    print $tofh qq[$s[0]\t$s[1]\t$s[2]\t$type\t$s[3]\t$s[4]\t].$reads{ $s[ 3 ] }.qq[\t90\n];
+                }
+            }
+            close( $bfh );close( $tofh );
+            
+            #now filter the fasta file to remove these reads
+            open( my $tfh, $candidatesFasta ) or die $!;
+            $fastaCounter ++; my $newFasta = qq[$$.candidates.$fastaCounter.fasta];
+            open( $tofh, qq[>$newFasta] ) or die $!;
+            while( my $h = <$tfh> )
+            {
+                chomp( $h );
+                my $seq = <$tfh>;
+                chomp( $seq );
+                if( ! $reads{ substr( $h, 1 ) } )
+                {
+                    print $tofh qq[$h\n$seq\n];
+                }
+            }
+            close( $tfh );close( $tofh );
+            $candidatesFasta = $newFasta;
+        }
+    }
     
     #create a single fasta file with all the TE ref seqs
     my $refsFasta = qq[$$.allrefs.fasta];
@@ -406,9 +517,11 @@ sub _findCandidates
         exit;
     }
     
+    if( $doAlign )
+    {
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
     #output format:                                                    read hitlen %id +/- refName
-    open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $$.candidates.fasta $refsFasta | egrep "^INFO|completed" | ] ) or die qq[Exonerate failed to run: $!];
+    open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $candidatesFasta $refsFasta | egrep "^INFO|completed" | ] ) or die qq[Exonerate failed to run: $!];
     print qq[Parsing PE alignments....\n];
     my $lastLine;
     my %anchors;
@@ -430,8 +543,8 @@ sub _findCandidates
     if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[Alignment did not complete correctly\n];}
     
     #now put all the anchors together into a single file per type
-    open( my $afh, qq[>$output] ) or die $!;
-    open( my $cfh, qq[$$.candidate_anchors.bed] ) or die $!;
+    open( my $afh, qq[>>$output] ) or die $!;
+    open( my $cfh, $candidatesBed ) or die $!;
     while( my $anchor = <$cfh> )
     {
         chomp( $anchor );
@@ -450,6 +563,7 @@ sub _findCandidates
     }
     close( $afh );close( $cfh );
     undef( %anchors );
+    }
     
     #if running split-read mode, then run exonerate on these sequences too
     if( $srmode && -s $clipFasta )
@@ -457,7 +571,7 @@ sub _findCandidates
         open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $clipFasta $refsFasta | egrep "^INFO|completed" | uniq | ] ) or die qq[Exonerate failed to run: $!];
         print qq[Parsing split-read alignments....\n];
         open( my $cofh, qq[>$srOutput] ) or die qq[Failed to create clipped candidates output file: $!\n];
-        $lastLine = '';
+        my $lastLine = '';
         my %readsAligned;
         while( my $hit = <$efh> )
         {
@@ -574,12 +688,12 @@ sub _findInsertions
         {
             system(qq[echo -e "$chr\t$start\t$end" > $$.region.bed ]) == 0 or die qq[failed to defined region];
             #system(qq[windowBED -a $sortedCandidates -b $$.region.bed > $$.merge.PE.sorted.region.tab]) == 0 or die qq[Failed to extract region from reads];
-            system(qq/awk '\$1==$chr&&\$2>$start&&\$3<$end' $merged > $$.merge.PE.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
+            system(qq/awk '\$1=="$chr"&&\$2>$start&&\$3<$end' $merged > $$.merge.PE.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
             $merged = qq[$$.merge.PE.region.tab];
         }
         else #just the chr is defined
         {
-            system(qq/awk '\$1==$chr' $merged > $$.merge.PE.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
+            system(qq/awk '\$1=="$chr"' $merged > $$.merge.PE.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
             $merged = qq[$$.merge.PE.region.tab];
         }
     }
@@ -848,12 +962,12 @@ sub _findInsertionsSR
         {
             system(qq[echo -e "$chr\t$start\t$end" > $$.region.bed ]) == 0 or die qq[failed to defined region];
             #system(qq[windowBED -a $sortedCandidates -b $$.region.bed > $$.merge.SR.sorted.region.tab]) == 0 or die qq[Failed to extract region from reads];
-            system(qq/awk '\$1==$chr&&\$2>$start&&\$3<$end' $sortedCandidates > $$.merge.SR.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
+            system(qq/awk '\$1=="$chr"&&\$2>$start&&\$3<$end' $sortedCandidates > $$.merge.SR.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
             $sortedCandidates = qq[$$.merge.SR.sorted.region.tab];
         }
         else #just the chr is defined
         {
-            system(qq/awk '\$1==$chr' $sortedCandidates > $$.merge.SR.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
+            system(qq/awk '\$1=="$chr"' $sortedCandidates > $$.merge.SR.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
             $sortedCandidates = qq[$$.merge.SR.sorted.region.tab];
         }
     }
@@ -1016,6 +1130,7 @@ sub _filterCallsBedMinima
 	}
 	
 	open( my $dfh, qq[>>$thrown_out_file] ) or die $!;
+	my %breakpointsTested;
 	while( my $originalCall = <$ifh> )
 	{
 	    chomp( $originalCall );
@@ -1029,6 +1144,8 @@ sub _filterCallsBedMinima
 	    my $t = Utilities::getCandidateBreakPointsDirVote($originalCallA[0], $originalCallA[1], $originalCallA[2],\@bams,20 );
 	    if( ! $t ){warn qq[Failed to get candidate breakpoints for call $originalCall\n];next;}
 	    my $breakpoint = $t->[ 0 ];my $depth = $t->[ 1 ];
+	    
+	    if( $breakpointsTested{ $breakpoint } ){print qq[Duplicate breakpoint found: $breakpoint. Skipping.\n];next;}else{$breakpointsTested{$breakpoint} = 1;}
 	    
         print qq[Testing breakpoint $breakpoint\n];
         
@@ -1092,7 +1209,7 @@ sub _genotype
         chomp;
         my $bam = $_;
         die qq[Cant find BAM file: $_\n] unless -f $bam;
-        die qq[Cant find BAM index for BAM: $bam\n] unless -f qq[$bam.bai];
+        die qq[Cant find BAM index for BAM: $bam\n] unless (-f qq[$bam.bai] || -l qq[$bam.bai]);
         
         my $bams = [$bam];
         my $s = Utilities::getBAMSampleName( $bams );
@@ -1183,6 +1300,7 @@ sub _getCandidateTEReadNames
     my $candidatesFasta = shift;
     my $candidatesBed = shift;
     my $clippedFasta = shift;
+    my $discordantMatesBed = shift;
     
     my %candidates;
     open( my $ffh, qq[>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
@@ -1192,6 +1310,7 @@ sub _getCandidateTEReadNames
     {
         open( $cfh, qq[>$clippedFasta] ) or die qq[ERROR: Failed to create clip fasta file: $!\n];
     }
+    open( my $dfh, qq[>>$discordantMatesBed] ) or die qq[ERROR: Failed to create discordant mates BED: $!\n];
     
     print qq[Opening BAM ($bam) and getting initial set of candidate mates....\n];
     
@@ -1201,7 +1320,7 @@ sub _getCandidateTEReadNames
     {
         chomp( $samLine );
         my @sam = split( /\t/, $samLine );
-        my $flag = $sam[ 1 ];;
+        my $flag = $sam[ 1 ];
         my $qual = $sam[ 4 ];
         my $name = $sam[ 0 ];
         my $ref = $sam[ 2 ];
@@ -1218,6 +1337,11 @@ sub _getCandidateTEReadNames
                 if( _sequenceQualityOK( $seq ) )
                 {
                     print $ffh qq[>$name\n$seq\n];
+                    
+                    #record the read position details in the BED file of discordant mates
+                    my $pos = $sam[ 3 ];
+                    my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
+                    print $dfh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\t$qual\n];
                 }
                 delete( $candidates{ $name } );
             }
@@ -1292,7 +1416,8 @@ sub _getCandidateTEReadNames
     close( $bfh );
     close( $ffh );
     close( $afh );
-    close( $cfh );
+    if( $minSoftClip ){close( $cfh );}
+    close( $dfh );
     
     return \%candidates;
 }

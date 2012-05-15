@@ -45,11 +45,48 @@ sub filterOutRegions
     my $filterBED = shift;
     my $outputBED = shift;
     
-    #run windowBED to do this - much quicker than the code below!
-    my $cmd = qq[windowBED -a $inputBED -b $filterBED -w 100 -v > $outputBED];
-    system( $cmd ) == 0 or die qq[Failed to run windowBED: $cmd\n];
+    #generate a new BED from the input BED using the mid points (approx. breakpoint) and use this to filter off
+    open( my $tfh, qq[>$$.tofilter.bed] ) or die $!;
+    open( my $ifh, qq[$inputBED] ) or die $!;
+    my $start = 0;
+    while( my $l = <$ifh> )
+    {
+        chomp( $l );
+        my @s = split( /\s+/, $l );
+        print $tfh qq[$s[0]\t].int((($s[1]+$s[2])/2)-50).qq[\t].int((($s[1]+$s[2])/2)+50).qq[\t$s[1]\n];
+        $start ++;
+    }
+    close( $ifh );close( $tfh );
     
-    my $filtered = `wc -l $outputBED`;chomp( $filtered );
+    #run windowBED to do this - much quicker than the code below!
+    my %keep;
+    open( my $kfh, qq[windowBED -a $$.tofilter.bed -b $filterBED -w 50 -v | ] ) or die $!;
+    while( my $l = <$kfh> )
+    {
+        chomp( $l );
+        my @s = split( /\s+/, $l );
+        $keep{ $s[ 3 ] } = 1;
+    }
+    close( $kfh );
+    
+    #now get these calls only and return them
+    open( my $ofh, qq[>$outputBED] ) or die $!;
+    open( $ifh, qq[$inputBED] ) or die $!;
+    while( my $l = <$ifh> )
+    {
+        chomp( $l );
+        my @s = split( /\s+/, $l );
+        print $ofh qq[$l\n] if( $keep{ $s[ 1 ] } );
+    }
+    close( $ifh );
+    
+#    my $cmd = qq[windowBED -a $$.tofilter.bed -b $filterBED -w 100 -v > $$.keep.bed];
+#    system( $cmd ) == 0 or die qq[Failed to run windowBED: $cmd\n];   
+#    my $filtered = `wc -l $outputBED`;chomp( $filtered );
+    
+    my $retained = scalar( keys( %keep ) );
+    print qq[Started with $start Retained $retained\n];
+    return $retained;
 
 =pod    
     my @calls;
@@ -97,8 +134,9 @@ sub filterOutRegions
     open( my $ofh, qq[>$outputBED] ) or die $!;
     foreach my $call ( @calls ){if(defined( $call ) ){ print $ofh qq[$call\n]; } }
     close( $ofh );
-=cut    
+
     return $filtered;
+=cut
 }
 
 sub getCandidateBreakPointsDepth
