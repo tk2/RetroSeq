@@ -35,7 +35,7 @@ my $DEFAULT_MAX_DEPTH = 200;
 my $DEFAULT_READS = 10;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 120;
-my $DEFAULT_MIN_CLUSTER_READS = 5;
+my $DEFAULT_MIN_CLUSTER_READS = 3;
 my $DEFAULT_SR_MIN_CLUSTER_READS = 3;
 my $DEFAULT_SR_MIN_UNKNOWN_CLUSTER_READS = 10;
 my $DEFAULT_MAX_CLUSTER_DIST = 4000;
@@ -103,6 +103,8 @@ GetOptions
 print <<MESSAGE;
 
 RetroSeq: A tool for discovery and genotyping of transposable elements from short read alignments
+
+Version: 1.2
 Author: Thomas Keane (thomas.keane\@sanger.ac.uk)
 
 MESSAGE
@@ -121,14 +123,14 @@ USAGE
 
 if( $discover )
 {
-    ( $bam && $eRefFofn && $output ) or die <<USAGE;
+    ( $bam && $output ) or die <<USAGE;
 Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q <int>] [-id <int>] [-len <int> -noclean]
     
     -bam        BAM file of paired reads mapped to reference genome
-    -eref       Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta)
     -output     Output file to store candidate supporting reads (required for calling step)
+    [-eref      Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta). Required when the -align option is used.]
     [-refTEs    Tab file with TE type and BED file of reference elements. These will be used to quickly assign discordant reads the TE types and avoid alignment. Using this will speed up discovery dramatically.]
-    [-srmode]   Search for split reads in the BAM file
+    [-srmode   Search for split reads in the BAM file]
     [-minclip]  Minimum length of soft clippped portion of read to be considered for split-read analysis. Default is 30bp.
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
     [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
@@ -141,12 +143,16 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q 
 USAGE
     
     croak qq[Cant find BAM file: $bam] unless -f $bam || -l $bam;
-    croak qq[Cant find TE tab file: $eRefFofn] unless -f $eRefFofn;
+    croak qq[Cant find TE tab file: $eRefFofn] if( $doAlign && ! -f $eRefFofn );
     
-    my $erefs = _tab2Hash( $eRefFofn );
-    foreach my $type ( keys( %{$erefs} ) )
+    my $erefs;
+    if( $doAlign )
     {
-        if( ! -f $$erefs{$type} ){croak qq[Cant find transposon reference file: ].$$erefs{ $type };}
+        $erefs = _tab2Hash( $eRefFofn );
+        foreach my $type ( keys( %{$erefs} ) )
+        {
+            if( ! -f $$erefs{$type} ){croak qq[Cant find transposon reference file: ].$$erefs{ $type };}
+        }
     }
     
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
@@ -482,6 +488,8 @@ sub _findCandidates
         }
     }
     
+    if( $doAlign )
+    {
     #create a single fasta file with all the TE ref seqs
     my $refsFasta = qq[$$.allrefs.fasta];
     open( my $tfh, qq[>$refsFasta] ) or die $!;
@@ -517,8 +525,6 @@ sub _findCandidates
         exit;
     }
     
-    if( $doAlign )
-    {
     #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
     #output format:                                                    read hitlen %id +/- refName
     open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $candidatesFasta $refsFasta | egrep "^INFO|completed" | ] ) or die qq[Exonerate failed to run: $!];
@@ -563,7 +569,6 @@ sub _findCandidates
     }
     close( $afh );close( $cfh );
     undef( %anchors );
-    }
     
     #if running split-read mode, then run exonerate on these sequences too
     if( $srmode && -s $clipFasta )
@@ -614,6 +619,7 @@ sub _findCandidates
         close( $cofh );
         
         if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[SR alignment did not complete correctly\n];}
+    }
     }
     
     if( $clean )
