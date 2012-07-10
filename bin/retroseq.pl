@@ -344,7 +344,7 @@ sub _findCandidates
     }
     
     my $fastaCounter = 0;
-    my $candidatesFasta = qq[$$.candidates.$fastaCounter.fasta];
+    my $candidatesFasta = $doAlign ? qq[$$.candidates.$fastaCounter.fasta] : undef;
     my $candidatesBed = qq[$$.candidate_anchors.bed];
     my $discordantMatesBed = qq[$$.discordant_mates.bed];
     my $clipFasta = qq[$$.clip_candidates.fasta];
@@ -354,7 +354,8 @@ sub _findCandidates
     
     if( keys( %candidates ) > 0 )
     {
-        open( my $ffh, qq[>>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
+        my $ffh;
+        if( $doAlign ){open( my $ffh, qq[>>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];}
         
         #now go and get the reads from the bam (annoying have to traverse through the bam a second time - but required for reads where the mate is aligned distantly)
         #also dump out their mates as will need these later as anchors
@@ -376,7 +377,7 @@ sub _findCandidates
                     my $seq = $s[ 9 ];
                     if( _sequenceQualityOK( $seq ) )
                     {
-                        print $ffh qq[>$name\n$seq\n];
+                        if( $doAlign ){print $ffh qq[>$name\n$seq\n];}
                         
                         #record the read position details in the BED file of discordant mates
                         my $pos = $s[ 3 ];
@@ -390,7 +391,7 @@ sub _findCandidates
             }
             if( $currentChr ne $ref && $ref ne '*' ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
         }
-        close( $ffh );close( $dfh );
+        if( $doAlign ){close( $ffh );}close( $dfh );
     }
     undef %candidates; #finished with this hash
     
@@ -1309,7 +1310,8 @@ sub _getCandidateTEReadNames
     my $discordantMatesBed = shift;
     
     my %candidates;
-    open( my $ffh, qq[>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];
+    my $ffh;
+    if( defined($candidatesFasta) ){open( my $ffh, qq[>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];}
     open( my $afh, qq[>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
     my $cfh;
     if( $minSoftClip )
@@ -1342,7 +1344,7 @@ sub _getCandidateTEReadNames
                 
                 if( _sequenceQualityOK( $seq ) )
                 {
-                    print $ffh qq[>$name\n$seq\n];
+                    if( defined($candidatesFasta) ){print $ffh qq[>$name\n$seq\n];}
                     
                     #record the read position details in the BED file of discordant mates
                     my $pos = $sam[ 3 ];
@@ -1420,7 +1422,7 @@ sub _getCandidateTEReadNames
         if( $currentChr ne $ref && $ref ne '*' ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
     }
     close( $bfh );
-    close( $ffh );
+    if( defined($candidatesFasta) ){close( $ffh );}
     close( $afh );
     if( $minSoftClip ){close( $cfh );}
     close( $dfh );
