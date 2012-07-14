@@ -60,7 +60,7 @@ sub filterOutRegions
     
     #run windowBED to do this - much quicker than the code below!
     my %keep;
-    open( my $kfh, qq[windowBED -a $$.tofilter.bed -b $filterBED -w 50 -v | ] ) or die $!;
+    open( my $kfh, qq[windowBED -a $$.tofilter.bed -b $filterBED -w 30 -v | ] ) or die $!;
     while( my $l = <$kfh> )
     {
         chomp( $l );

@@ -1,12 +1,12 @@
 RetroSeq: A tool for discovery and genotyping of transposable elements from short read alignments
-Version: 0.1
+
+Version: 1.2
 Author: Thomas Keane (thomas.keane@sanger.ac.uk)
 
 Usage: retroseq.pl -<command> options
 
             -discover       Takes a BAM and a set of reference TE (fasta) and calls candidate supporting read pairs (BED output)
-            -call           Takes multiple output of discovery stage (can be multiple files of same sample e.g. multiple lanes) and a BAM and outputs a VCF of TE calls
-            -genotype       Input is a VCF of TE calls and a set of sample BAMs, output is a new VCF with genotype calls for new samples
+            -call           Takes multiple output of discovery stage and a BAM and outputs a VCF of TE calls
             
-NOTE: retroseq.pl requires samtools, exonerate, unix sort to be in the default path
+NOTE: retroseq.pl requires samtools, bcftools, exonerate, unix sort to be in the default path
 

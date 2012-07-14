@@ -415,21 +415,24 @@ sub _findCandidates
         while( my $l = <$rfh> ){chomp( $l );$reads{ $l } = 1;}
         
         #filter the fasta file on these readnames
-        open( $tfh, $candidatesFasta ) or die $!;
-        $fastaCounter ++; my $newFasta = qq[$$.candidates.$fastaCounter.fasta];
-        open( my $tofh, qq[>$newFasta] ) or die $!;
-        while( my $h = <$tfh> )
+        if( $doAlign )
         {
-            chomp( $h );
-            my $seq = <$tfh>;
-            chomp( $seq );
-            if( ! $reads{ substr( $h, 1 ) } )
+            open( $tfh, $candidatesFasta ) or die $!;
+            $fastaCounter ++; my $newFasta = qq[$$.candidates.$fastaCounter.fasta];
+            open( my $tofh, qq[>$newFasta] ) or die $!;
+            while( my $h = <$tfh> )
             {
-                print $tofh qq[$h\n$seq\n];
+                chomp( $h );
+                my $seq = <$tfh>;
+                chomp( $seq );
+                if( ! $reads{ substr( $h, 1 ) } )
+                {
+                    print $tofh qq[$h\n$seq\n];
+                }
             }
+            close( $tfh );close( $tofh );
+            $candidatesFasta = $newFasta;
         }
-        close( $tfh );close( $tofh );
-        $candidatesFasta = $newFasta;
     }
     
     #if the user provided a tab file with mappings of TE type to BED file of locations
@@ -471,21 +474,24 @@ sub _findCandidates
             close( $bfh );close( $tofh );
             
             #now filter the fasta file to remove these reads
-            open( my $tfh, $candidatesFasta ) or die $!;
-            $fastaCounter ++; my $newFasta = qq[$$.candidates.$fastaCounter.fasta];
-            open( $tofh, qq[>$newFasta] ) or die $!;
-            while( my $h = <$tfh> )
+            if( $doAlign )
             {
-                chomp( $h );
-                my $seq = <$tfh>;
-                chomp( $seq );
-                if( ! $reads{ substr( $h, 1 ) } )
+                open( my $tfh, $candidatesFasta ) or die $!;
+                $fastaCounter ++; my $newFasta = qq[$$.candidates.$fastaCounter.fasta];
+                open( $tofh, qq[>$newFasta] ) or die $!;
+                while( my $h = <$tfh> )
                 {
-                    print $tofh qq[$h\n$seq\n];
+                    chomp( $h );
+                    my $seq = <$tfh>;
+                    chomp( $seq );
+                    if( ! $reads{ substr( $h, 1 ) } )
+                    {
+                        print $tofh qq[$h\n$seq\n];
+                    }
                 }
+                close( $tfh );close( $tofh );
+                $candidatesFasta = $newFasta;
             }
-            close( $tfh );close( $tofh );
-            $candidatesFasta = $newFasta;
         }
     }
     
