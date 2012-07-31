@@ -1,4 +1,4 @@
-package Vcf;
+package RetroSeq::Vcf;
 
 # http://vcftools.sourceforge.net/specs.html
 # http://www.1000genomes.org/wiki/Analysis/Variant%20Call%20Format/vcf-variant-call-format-version-41
@@ -431,7 +431,7 @@ sub _set_version
 #---------------------------------------
 
 package VcfReader;
-use base qw(Vcf);
+use base qw(RetroSeq::Vcf);
 use strict;
 use warnings;
 use Carp;

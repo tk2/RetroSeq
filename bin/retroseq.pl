@@ -24,9 +24,9 @@ use Cwd;
 use File::Basename;
 use File::Path qw(make_path);
 
-use lib dirname(__FILE__).'/../lib/';
-use Vcf;
-use Utilities;
+use lib dirname(__FILE__).'/..';
+use RetroSeq::Vcf;
+use RetroSeq::Utilities;
 
 my $DEFAULT_ID = 80;
 my $DEFAULT_LENGTH = 36;
@@ -42,7 +42,7 @@ my $DEFAULT_MAX_CLUSTER_DIST = 4000;
 my $DEFAULT_MAX_SR_CLUSTER_DIST = 30;
 my $DEFAULT_MIN_SOFT_CLIP = 30;
 
-my $HEADER = qq[#retroseq v:].substr($Utilities::VERSION,0,1);
+my $HEADER = qq[#retroseq v:].substr($RetroSeq::Utilities::VERSION,0,1);
 my $FOOTER = qq[#END_CANDIDATES];
 
 my $BAMFLAGS = 
@@ -176,8 +176,8 @@ USAGE
     print qq[\nMin anchor quality: $anchorQ\nMin percent identity: $id\nMin length for hit: $length\n\n];
     
     #test for samtools
-    Utilities::checkBinary( q[samtools], qq[0.1.16] );
-    Utilities::checkBinary( q[exonerate], qq[2.2.0] );
+    RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16] );
+    RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] );
     
     _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $minSoftClip, $srOutputFile, $refTEs, $excludeRegionsDis, $doAlign, $clean );
 }
@@ -232,14 +232,14 @@ USAGE
     }
     
     #test for samtools
-    Utilities::checkBinary( q[samtools], qq[0.1.16] );
-    Utilities::checkBinary( q[bcftools] );
+    RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16] );
+    RetroSeq::Utilities::checkBinary( q[bcftools] );
     
     my @bams;
     my $first = `head -1 $bam`;chomp( $first );
     if( -f $first ) #is this a fofn
     {
-        Utilities::checkBinary( q[windowBED] );
+        RetroSeq::Utilities::checkBinary( q[windowBED] );
         
         open( my $ifh, $bam ) or die qq[failed to BAM fofn: $input\n];
         while(my $file = <$ifh> )
@@ -252,7 +252,7 @@ USAGE
     }
     else{if( ( -l $bam || -f $bam ) && ( -l $bam.qq[.bai] || -f $bam.qq[.bai] ) ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
     
-    my $sampleName = Utilities::getBAMSampleName( \@bams );
+    my $sampleName = RetroSeq::Utilities::getBAMSampleName( \@bams );
     print qq[Calling sample $sampleName\n];
     
     #what sort of calling to run - PE and/or SR
@@ -303,8 +303,8 @@ USAGE
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
     
     #test for samtools
-    Utilities::checkBinary( q[samtools], qq[0.1.16] );
-    Utilities::checkBinary( q[bcftools] );
+    RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16] );
+    RetroSeq::Utilities::checkBinary( q[bcftools] );
     
     _genotype( $bams, $input, $ref, $region, $anchorQ, $output, $clean, $heterozygous, $orientate, $reads );
 }
@@ -333,7 +333,7 @@ sub _findCandidates
     my $clean = shift;
     
     #test for exonerate
-    Utilities::checkBinary( q[exonerate], qq[2.2.0] );
+    RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] );
     
     my $readgroupsFile = qq[$$.readgroups];
     if( $readgroups )
@@ -355,7 +355,7 @@ sub _findCandidates
     if( keys( %candidates ) > 0 )
     {
         my $ffh;
-        if( $doAlign ){open( my $ffh, qq[>>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];}
+        if( $doAlign ){open( $ffh, qq[>>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];}
         
         #now go and get the reads from the bam (annoying have to traverse through the bam a second time - but required for reads where the mate is aligned distantly)
         #also dump out their mates as will need these later as anchors
@@ -761,7 +761,7 @@ sub _findInsertions
                 #convert to a region BED (removing any candidates with very low numbers of reads)
                 print qq[$currentType Calling initial rough boundaries of insertions....\n];
                 my $rawTECalls1 = qq[$$.raw_calls.1.$currentType.tab];
-                my $numRegions = Utilities::convertToRegionBedPairsWindowBED( qq[$$.$currentType.pe_anchors.bed], $DEFAULT_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, 1, 0, $rawTECalls1 );
+                my $numRegions = RetroSeq::Utilities::convertToRegionBedPairsWindowBED( qq[$$.$currentType.pe_anchors.bed], $DEFAULT_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, 1, 0, $rawTECalls1 );
                 
                 if( $numRegions == 0 )
                 {
@@ -781,7 +781,7 @@ sub _findInsertions
                     
                     #remove the regions specified in the exclusion BED file
                     my $rawTECalls1Filtered = qq[$$.raw_calls.1.$currentType.filtered.tab];
-                    Utilities::filterOutRegions( $rawTECalls1, $filterBEDs{ $currentType }, $rawTECalls1Filtered );
+                    RetroSeq::Utilities::filterOutRegions( $rawTECalls1, $filterBEDs{ $currentType }, $rawTECalls1Filtered );
                     $rawTECalls1 = $rawTECalls1Filtered;
                 }
                 
@@ -799,14 +799,14 @@ sub _findInsertions
                 
                 #remove close duplicated calls
                 my $rmdupHomCalls = qq[$$.raw_calls.3.$currentType.hom.rmdup.bed];
-                Utilities::_removeDups( $homCalls, $rmdupHomCalls );
+                RetroSeq::Utilities::_removeDups( $homCalls, $rmdupHomCalls );
                 $typeBEDFiles{ $currentType }{hom} = $rmdupHomCalls if( -f $rmdupHomCalls && -s $rmdupHomCalls > 0 );
                 
                 my $rmdupHetCalls;
                 if( $hets && -f $hetCalls && -s $hetCalls > 0 )
                 {
                     $rmdupHetCalls = qq[$$.raw_calls.3.$currentType.het.rmdup.bed];
-                    Utilities::_removeDups( $hetCalls, $rmdupHetCalls );
+                    RetroSeq::Utilities::_removeDups( $hetCalls, $rmdupHetCalls );
                     $typeBEDFiles{ $currentType }{het} = $rmdupHetCalls;
                 }
 =pod                
@@ -819,13 +819,13 @@ sub _findInsertions
                     my $filtered = qq[$rmdupHomCalls.refFiltered];
                     if( $filterBEDs{ $currentType } )
                     {
-                        Utilities::filterOutRegions( $rmdupHomCalls, $filterBEDs{ $currentType }, $filtered );
+                        RetroSeq::Utilities::filterOutRegions( $rmdupHomCalls, $filterBEDs{ $currentType }, $filtered );
                         $typeBEDFiles{ $currentType }{hom} = $filtered;
                         
                         if( $hets && -f $rmdupHetCalls && -s $rmdupHetCalls > 0 )
                         {
                             $filtered = qq[$rmdupHetCalls.refFiltered];
-                            Utilities::filterOutRegions( $rmdupHetCalls, $filterBEDs{ $currentType }, $filtered );
+                            RetroSeq::Utilities::filterOutRegions( $rmdupHetCalls, $filterBEDs{ $currentType }, $filtered );
                             $typeBEDFiles{ $currentType }{het} = $filtered;
                         }
                     }
@@ -877,7 +877,7 @@ sub _findInsertions
         
         if( -f $unknownHoms )
         {
-            my $removed = Utilities::filterOutRegions( $unknownHoms, qq[$$.PE.allcalls.bed], qq[$$.unknownHoms.filtered] );
+            my $removed = RetroSeq::Utilities::filterOutRegions( $unknownHoms, qq[$$.PE.allcalls.bed], qq[$$.unknownHoms.filtered] );
             if( $removed > 0 )
             {
                 print qq[Removed $removed hom unknown calls\n];
@@ -887,7 +887,7 @@ sub _findInsertions
         
         if( $hets && defined( $unknownHets ) && -s $unknownHets )
         {
-            my $removed = Utilities::filterOutRegions( $unknownHets, qq[$$.PE.allcalls.bed], qq[$$.unknownHets.filtered] );
+            my $removed = RetroSeq::Utilities::filterOutRegions( $unknownHets, qq[$$.PE.allcalls.bed], qq[$$.unknownHets.filtered] );
             if( $removed > 0 )
             {
                 print qq[Removed $removed het unknown calls\n];
@@ -993,7 +993,7 @@ sub _findInsertionsSR
         chomp( $line );
         my @s = split( /\t/, $line );
         next unless $s[ 4 ] eq 'unknown';
-        my $breakpoint = Utilities::calculateCigarBreakpoint( $s[ 1 ], $s[ 6 ] );
+        my $breakpoint = RetroSeq::Utilities::calculateCigarBreakpoint( $s[ 1 ], $s[ 6 ] );
         my $orientation = ($s[ 5 ] & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
         print $ufh qq[$s[0]\t$breakpoint\t$breakpoint\tunknown\t$orientation\n];
     }
@@ -1026,12 +1026,12 @@ sub _findInsertionsSR
                 
                 #call the regions
                 my $minReads = $currentType eq 'unknown' ? $DEFAULT_SR_MIN_UNKNOWN_CLUSTER_READS : $DEFAULT_SR_MIN_CLUSTER_READS;
-                if( $readCount > 0 && Utilities::convertToRegionBedPairsWindowBED( qq[$$.$currentType.sr_anchors.sorted.bed], $minReads, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_SR_CLUSTER_DIST, 0, 1, qq[$$.$currentType.sr_calls.bed] ) > 0 )
+                if( $readCount > 0 && RetroSeq::Utilities::convertToRegionBedPairsWindowBED( qq[$$.$currentType.sr_anchors.sorted.bed], $minReads, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_SR_CLUSTER_DIST, 0, 1, qq[$$.$currentType.sr_calls.bed] ) > 0 )
                 {
                     my $bedCalls = qq[$$.$currentType.sr_calls.bed];
                     
                     #remove duplicate calls (if any)
-                    Utilities::_removeDups( $bedCalls, qq[$$.$currentType.sr_calls.rmdup.bed] );
+                    RetroSeq::Utilities::_removeDups( $bedCalls, qq[$$.$currentType.sr_calls.rmdup.bed] );
                     $bedCalls = qq[$$.$currentType.sr_calls.rmdup.bed];
                     $typeBEDFiles{ $currentType }{hom} = $bedCalls if( -f $bedCalls && -s $bedCalls > 0 );
                     
@@ -1042,7 +1042,7 @@ sub _findInsertionsSR
                         my $filtered = qq[$$.$currentType.sr_calls.rmdup.filtered.bed];
                         if( $filterBEDs{ $currentType } )
                         {
-                            Utilities::filterOutRegions( $bedCalls, $filterBEDs{ $currentType }, $filtered );
+                            RetroSeq::Utilities::filterOutRegions( $bedCalls, $filterBEDs{ $currentType }, $filtered );
                             $bedCalls = $filtered;
                         }
                     }
@@ -1065,7 +1065,7 @@ sub _findInsertionsSR
                 my $orientation = ($s[ 5 ] & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
                 
                 #get the actual breakpoint from the cigar string, flag, and position field
-                my $breakpoint = Utilities::calculateCigarBreakpoint( $s[ 1 ], $s[ 6 ] );
+                my $breakpoint = RetroSeq::Utilities::calculateCigarBreakpoint( $s[ 1 ], $s[ 6 ] );
                 
                 print $cfh qq[$s[0]\t$breakpoint\t$breakpoint\t$currentType\t$orientation\n];
                 $readCount ++;
@@ -1087,7 +1087,7 @@ sub _findInsertionsSR
             system( qq[cat $f >> $$.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
         }
         
-        my $removed = Utilities::filterOutRegions( $unknownHoms, qq[$$.allcalls.bed], qq[$$.unknownHoms.filtered] );
+        my $removed = RetroSeq::Utilities::filterOutRegions( $unknownHoms, qq[$$.allcalls.bed], qq[$$.unknownHoms.filtered] );
         if( $removed > 0 )
         {
             print qq[Removed $removed hom unknown calls\n];
@@ -1098,7 +1098,7 @@ sub _findInsertionsSR
         foreach my $type( keys( %typeBEDFiles ) )
         {
             my $homs = $typeBEDFiles{$type}{hom};
-            my $removed = Utilities::checkBreakpointsSR($homs, \@bams, ($DEFAULT_SR_MIN_CLUSTER_READS * 2), $ignoreRGsFormatted, $DEFAULT_ANCHORQ, qq[$homs.breakpoints_checked]);
+            my $removed = RetroSeq::Utilities::checkBreakpointsSR($homs, \@bams, ($DEFAULT_SR_MIN_CLUSTER_READS * 2), $ignoreRGsFormatted, $DEFAULT_ANCHORQ, qq[$homs.breakpoints_checked]);
             if( $removed > 0 ){$typeBEDFiles{$type}{hom} = qq[$homs.breakpoints_checked];}
         }
     }
@@ -1154,7 +1154,7 @@ sub _filterCallsBedMinima
 	    
 	    my $start = $originalCallA[ 1 ];my $end = $originalCallA[ 2 ];my $chr = $originalCallA[ 0 ];
 	    
-	    my $t = Utilities::getCandidateBreakPointsDirVote($originalCallA[0], $originalCallA[1], $originalCallA[2],\@bams,20 );
+	    my $t = RetroSeq::Utilities::getCandidateBreakPointsDirVote($originalCallA[0], $originalCallA[1], $originalCallA[2],\@bams,20 );
 	    if( ! $t ){warn qq[Failed to get candidate breakpoints for call $originalCall\n];next;}
 	    my $breakpoint = $t->[ 0 ];my $depth = $t->[ 1 ];
 	    
@@ -1162,17 +1162,17 @@ sub _filterCallsBedMinima
 	    
         print qq[Testing breakpoint $breakpoint\n];
         
-        my $result = Utilities::testBreakPoint( $originalCallA[ 0 ], $breakpoint, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, $DEFAULT_MIN_SOFT_CLIP, 0 );
+        my $result = RetroSeq::Utilities::testBreakPoint( $originalCallA[ 0 ], $breakpoint, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, $DEFAULT_MIN_SOFT_CLIP, 0 );
         
         my $flag = $result->[0];
         my $call = $result->[1];
         my $ratio = $result->[2];
         
-        if( $flag == $Utilities::INV_BREAKPOINT )
+        if( $flag == $RetroSeq::Utilities::INV_BREAKPOINT )
         {
             print qq[Failed - at inversion breakpoint\n];
         }
-        elsif( $flag > $Utilities::NOT_ENOUGH_READS_CLUSTER )
+        elsif( $flag > $RetroSeq::Utilities::NOT_ENOUGH_READS_CLUSTER )
         {
             #decide if its a hom or het call by the depth
             if( $depth <= 10 )
@@ -1225,7 +1225,7 @@ sub _genotype
         die qq[Cant find BAM index for BAM: $bam\n] unless (-f qq[$bam.bai] || -l qq[$bam.bai]);
         
         my $bams = [$bam];
-        my $s = Utilities::getBAMSampleName( $bams );
+        my $s = RetroSeq::Utilities::getBAMSampleName( $bams );
         if( $s ){$sampleBAM{ $s } = $bam;}else{die qq[Failed to determine sample name for BAM: $bam\nCheck SM tag in the read group entries.\n];exit;}
     }close( $tfh );
     
@@ -1249,7 +1249,7 @@ sub _genotype
 	{
 	    $vcf_out->add_columns( $sample );
 	}
-	my $header = Utilities::getVcfHeader( $vcf_out );
+	my $header = RetroSeq::Utilities::getVcfHeader( $vcf_out );
 	print $out qq[$header];
 	
 	open( my $ofh, qq[>$output.candidates] ) or die $!;
@@ -1282,7 +1282,7 @@ sub _genotype
         foreach my $sample ( sort( keys( %sampleBAM ) ) )
         {
             my @bams = $sampleBAM{ $sample };
-            my $quality = Utilities::testBreakPoint($chr_, $pos, \@bams, $minMapQ, qq[$chr_\t$pos\t].($pos+1).qq[\t].$typeInfo[0].qq[\t].$typeInfo[3].qq[\n], $ofh, undef, $minReads, 1 );
+            my $quality = RetroSeq::Utilities::testBreakPoint($chr_, $pos, \@bams, $minMapQ, qq[$chr_\t$pos\t].($pos+1).qq[\t].$typeInfo[0].qq[\t].$typeInfo[3].qq[\n], $ofh, undef, $minReads, 1 );
             if( $quality )
 	        {
 	            $$entry{gtypes}{$sample}{GT} = $gt;
@@ -1317,7 +1317,7 @@ sub _getCandidateTEReadNames
     
     my %candidates;
     my $ffh;
-    if( defined($candidatesFasta) ){open( my $ffh, qq[>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];}
+    if( defined($candidatesFasta) ){open( $ffh, qq[>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];}
     open( my $afh, qq[>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
     my $cfh;
     if( $minSoftClip )
@@ -1361,7 +1361,7 @@ sub _getCandidateTEReadNames
             }
         }
         
-        my $supporting = Utilities::isSupportingClusterRead( $flag, $sam[ 8 ], $qual, $minAnchor, $minSoftClip, $cigar );
+        my $supporting = RetroSeq::Utilities::isSupportingClusterRead( $flag, $sam[ 8 ], $qual, $minAnchor, $minSoftClip, $cigar );
         
         if( $supporting > 0 )
         {
@@ -1476,10 +1476,10 @@ sub _outputCalls
     
     open( my $vfh, qq[>$output] ) or die $!;
     
-    my $vcf_out = Vcf->new();
+    my $vcf_out = RetroSeq::Vcf->new();
     $vcf_out->add_columns($sample);
     
-    my $header = Utilities::getVcfHeader($vcf_out);
+    my $header = RetroSeq::Utilities::getVcfHeader($vcf_out);
     print $vfh $header;
     
     open( my $bfh, qq[>$output.bed] ) or die $!; 
