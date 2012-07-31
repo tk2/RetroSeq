@@ -22,7 +22,6 @@ use warnings;
 use Getopt::Long;
 use Cwd;
 use File::Basename;
-use File::Path qw(make_path);
 
 use lib dirname(__FILE__).'/..';
 use RetroSeq::Vcf;
