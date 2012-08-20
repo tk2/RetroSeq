@@ -127,17 +127,18 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q 
     
     -bam        BAM file of paired reads mapped to reference genome
     -output     Output file to store candidate supporting reads (required for calling step)
-    [-eref      Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta). Required when the -align option is used.]
     [-refTEs    Tab file with TE type and BED file of reference elements. These will be used to quickly assign discordant reads the TE types and avoid alignment. Using this will speed up discovery dramatically.]
     [-srmode   Search for split reads in the BAM file]
-    [-minclip]  Minimum length of soft clippped portion of read to be considered for split-read analysis. Default is 30bp.
+    [-minclip  Minimum length of soft clippped portion of read to be considered for split-read analysis. Default is 30bp.]
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
     [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
     [-id        Minimum percent ID for a match of a read to the transposon references. Default is 90.]
-    [-len       Minimum length of a hit to the transposon references. Default is 36bp.]
     [-rgs       Comma separated list of readgroups to operate on. Default is all.]
     [-exd       Fofn of BED files of regions where discordant mates falling into will be excluded e.g. simple repeats, centromeres, telomeres]
     [-align     Do the computational expensive exonerate PE discordant mate alignment step]
+    [-eref      Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta). Required when the -align option is used.]
+    [-len       Minimum length of a hit to the transposon references when using the -align option. Default is 36bp.]
+
     
 USAGE
     
@@ -191,16 +192,14 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-s
     -output         Output file name (VCF)
     [-srinput       Either a single output from split-read discovery stage OR a prefix of a set of files to be combined for calling (will trigger split-read calling to run)]
     [-hets          Call heterozygous insertions. Default is homozygous.]
-    [-orientate     Attempt to predicate the orientation of the calls. Default is no.]
     [-filter        Tab file with TE type and BED file of reference elements. These will be filtered out from the calling.]
     [-region        Call a particular chromosome only (chr) OR region (chr:start-end) only]
     [-depth         Max average depth of a region to be considered for calling. Default is 200.]
-    [-reads         It is the minimum number of reads required to make a call. Default is 5. Parameter is optional.]
-    [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
+    [-reads         It is the minimum number of reads required to make a call. Default is 5.]
+    [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30.]
     [-ignoreRGs     Single read group name OR a file of readgroups that should be ignored. Default is none.]
-    [-novel]    Call novel sequence insertions also (from non-TE mate pairs)
     [-noclean       Do not remove intermediate output files. Default is to cleanup.]
-        
+    
 USAGE
     
     croak qq[Cant find BAM or BAM fofn: $bam] unless -f $bam || -l $bam;
@@ -258,10 +257,10 @@ USAGE
     if( $srInputFile )
     {
         print qq[Beginning split-read calling...\n];
-        _findInsertionsSR( \@bams, $sampleName, $srInputFile, $ref, $output.qq[.SR], $reads, $depth, $region, $clean, \%filterBEDs, $heterozygous, $ignoreRGsFofn, $callNovel );
+        _findInsertionsSR( \@bams, $sampleName, $srInputFile, $ref, $output.qq[.SR.vcf], $reads, $depth, $region, $clean, \%filterBEDs, $heterozygous, $ignoreRGsFofn, $callNovel );
         
         print qq[Beginning paired-end calling...\n];
-        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE], $reads, $depth, $anchorQ, $region, $clean, \%filterBEDs, $heterozygous, $orientate, $ignoreRGsFofn, $callNovel );
+        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE.vcf], $reads, $depth, $anchorQ, $region, $clean, \%filterBEDs, $heterozygous, $orientate, $ignoreRGsFofn, $callNovel );
         
         #now merge the VCF files into a single VCF
         #implement later..
@@ -269,7 +268,7 @@ USAGE
     else
     {
         print qq[Beginning paired-end calling...\n];
-        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE], $reads, $depth, $anchorQ, $region, $clean, \%filterBEDs, $heterozygous, $orientate, $ignoreRGsFofn, $callNovel );
+        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE.vcf], $reads, $depth, $anchorQ, $region, $clean, \%filterBEDs, $heterozygous, $orientate, $ignoreRGsFofn, $callNovel );
     }
 	exit;
 }
