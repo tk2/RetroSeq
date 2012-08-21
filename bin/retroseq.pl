@@ -41,7 +41,7 @@ my $DEFAULT_MAX_CLUSTER_DIST = 4000;
 my $DEFAULT_MAX_SR_CLUSTER_DIST = 30;
 my $DEFAULT_MIN_SOFT_CLIP = 30;
 
-my $HEADER = qq[#retroseq v:].substr($RetroSeq::Utilities::VERSION,0,1);
+my $HEADER = qq[#retroseq v:].$RetroSeq::Utilities::VERSION;
 my $FOOTER = qq[#END_CANDIDATES];
 
 my $BAMFLAGS = 
@@ -103,7 +103,7 @@ print <<MESSAGE;
 
 RetroSeq: A tool for discovery and genotyping of transposable elements from short read alignments
 
-Version: 1.2
+Version: $RetroSeq::Utilities::VERSION
 Author: Thomas Keane (thomas.keane\@sanger.ac.uk)
 
 MESSAGE
