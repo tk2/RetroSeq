@@ -59,7 +59,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $srmode, $minSoftClip, $srOutputFile, $srInputFile, $callNovel, $refTEs, $excludeRegionsDis, $doAlign, $help);
+my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $srmode, $minSoftClip, $srOutputFile, $srInputFile, $callNovel, $refTEs, $excludeRegionsDis, $doAlign, $singleEnds, $help);
 
 GetOptions
 (
@@ -96,6 +96,7 @@ GetOptions
     'refTEs=s'      =>  \$refTEs,
     'exd=s'         =>  \$excludeRegionsDis,
     'align'         =>  \$doAlign,
+    'unmapped'      =>  \$singleEnds,
     'h|help'        =>  \$help,
 );
 
@@ -114,7 +115,7 @@ Usage: $0 -<command> options
             -discover       Takes a BAM and a set of reference TE (fasta) and calls candidate supporting read pairs (BED output)
             -call           Takes multiple output of discovery stage and a BAM and outputs a VCF of TE calls
             
-NOTE: $0 requires samtools, bcftools, exonerate, unix sort to be in the default path
+NOTE: $0 requires samtools, bcftools, exonerate, unix sort, bedtools to be in the default path
 
 USAGE
 
@@ -128,8 +129,8 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q 
     -bam        BAM file of paired reads mapped to reference genome
     -output     Output file to store candidate supporting reads (required for calling step)
     [-refTEs    Tab file with TE type and BED file of reference elements. These will be used to quickly assign discordant reads the TE types and avoid alignment. Using this will speed up discovery dramatically.]
-    [-srmode   Search for split reads in the BAM file]
-    [-minclip  Minimum length of soft clippped portion of read to be considered for split-read analysis. Default is 30bp.]
+    [-srmode    Search for split reads in the BAM file]
+    [-minclip   Minimum length of soft clippped portion of read to be considered for split-read analysis. Default is 30bp.]
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
     [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
     [-id        Minimum percent ID for a match of a read to the transposon references. Default is 90.]
@@ -138,6 +139,7 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q 
     [-align     Do the computational expensive exonerate PE discordant mate alignment step]
     [-eref      Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta). Required when the -align option is used.]
     [-len       Minimum length of a hit to the transposon references when using the -align option. Default is 36bp.]
+    [-unmapped  Include single-end mapped reads in list of candidates e.g. when using the -refTEs option and want to include single-end mapped reads too]
 
     
 USAGE
@@ -177,9 +179,9 @@ USAGE
     
     #test for samtools
     RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16] );
-    RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] );
+    RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] ) if( $doAlign );
     
-    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $minSoftClip, $srOutputFile, $refTEs, $excludeRegionsDis, $doAlign, $clean );
+    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $minSoftClip, $srOutputFile, $refTEs, $excludeRegionsDis, $doAlign, $singleEnds, $clean );
 }
 elsif( $call )
 {
@@ -328,10 +330,8 @@ sub _findCandidates
     my $refTEs = shift;
     my $excludeRegionsDis = shift;
     my $doAlign = shift;
+    my $singleEnds = shift;
     my $clean = shift;
-    
-    #test for exonerate
-    RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] );
     
     my $readgroupsFile = qq[$$.readgroups];
     if( $readgroups )
@@ -345,8 +345,9 @@ sub _findCandidates
     my $candidatesFasta = $doAlign ? qq[$$.candidates.$fastaCounter.fasta] : undef;
     my $candidatesBed = qq[$$.candidate_anchors.bed];
     my $discordantMatesBed = qq[$$.discordant_mates.bed];
+    my $singleEndsBed = $singleEnds ? qq[$$.single_ends.bed] : undef;
     my $clipFasta = qq[$$.clip_candidates.fasta];
-    my %candidates = %{ _getCandidateTEReadNames($bam, $readgroups, $minAnchor, $minSoftClip, $candidatesFasta, $candidatesBed, $clipFasta, $discordantMatesBed ) };
+    my %candidates = %{ _getCandidateTEReadNames($bam, $readgroups, $minAnchor, $minSoftClip, $candidatesFasta, $candidatesBed, $clipFasta, $discordantMatesBed, $singleEndsBed ) };
     
     print scalar( keys( %candidates ) ).qq[ candidate reads remain to be found after first pass....\n];
     
@@ -469,9 +470,9 @@ sub _findCandidates
                     print $tofh qq[$s[0]\t$s[1]\t$s[2]\t$type\t$s[3]\t$s[4]\t].$reads{ $s[ 3 ] }.qq[\t90\n];
                 }
             }
-            close( $bfh );close( $tofh );
+            close( $bfh );
             
-            #now filter the fasta file to remove these reads
+            #now filter the fasta file to remove these reads if doing alignment step subsequently
             if( $doAlign )
             {
                 open( my $tfh, $candidatesFasta ) or die $!;
@@ -491,98 +492,65 @@ sub _findCandidates
                 $candidatesFasta = $newFasta;
             }
         }
+        
+        #now also print the single end mapped reads (if user choose that option)
+        if( $singleEnds )
+        {
+            open( my $sefh, qq[$$.single_ends.bed] ) or die qq[Failed to open single ends BED file\n];
+            while( my $line = <$sefh> )
+            {
+                chomp( $line );
+                my @s = split( /\t/, $line );
+                print $tofh qq[$s[0]\t$s[1]\t$s[2]\tunknown\t$s[3]\t$s[4]\t\t90\n];
+            }
+            close( $sefh );
+        }
+        close( $tofh );
     }
     
     if( $doAlign )
     {
-    #create a single fasta file with all the TE ref seqs
-    my $refsFasta = qq[$$.allrefs.fasta];
-    open( my $tfh, qq[>$refsFasta] ) or die $!;
-    foreach my $type ( keys( %{ $erefs } ) )
-    {
-        open( my $sfh, $$erefs{ $type } ) or die $!;
-        my $seqCount = 1;
-        while( my $line = <$sfh>)
+        #create a single fasta file with all the TE ref seqs
+        my $refsFasta = qq[$$.allrefs.fasta];
+        open( my $tfh, qq[>$refsFasta] ) or die $!;
+        foreach my $type ( keys( %{ $erefs } ) )
         {
-            chomp( $line );
-            if( $line =~ /^>/ )
+            open( my $sfh, $$erefs{ $type } ) or die $!;
+            my $seqCount = 1;
+            while( my $line = <$sfh>)
             {
-                print $tfh qq[>$type\n]; #call them all by the type label
+                chomp( $line );
+                if( $line =~ /^>/ )
+                {
+                    print $tfh qq[>$type\n]; #call them all by the type label
+                }
+                else
+                {
+                    print $tfh qq[$line\n];
+                }
             }
-            else
-            {
-                print $tfh qq[$line\n];
-            }
+            close( $sfh );
         }
-        close( $sfh );
-    }
-    close( $tfh );
-    
-    #if there arent any candidates, then we are done
-    if( -s $candidatesFasta == 0 )
-    {
-        if( $clean )
-        {
-            #delete the intermediate files
-            unlink( glob( qq[$$.*] ) ) or die qq[Failed to remove intermediate files: $!];
-        }
-        print qq[Failed to find any candidate reads - exiting];
-        exit;
-    }
-    
-    #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
-    #output format:                                                    read hitlen %id +/- refName
-    open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $candidatesFasta $refsFasta | egrep "^INFO|completed" | ] ) or die qq[Exonerate failed to run: $!];
-    print qq[Parsing PE alignments....\n];
-    my $lastLine;
-    my %anchors;
-    while( my $hit = <$efh> )
-    {
-        chomp( $hit );
-        $lastLine = $hit;
-        last if ( $hit =~ /^-- completed/ );
+        close( $tfh );
         
-        my @s = split( /\s+/, $hit );
-        #    check min identity	  check min length
-        if( $s[ 3 ] >= $id && $s[ 2 ] >= $length )
+        #if there arent any candidates, then we are done
+        if( -s $candidatesFasta == 0 )
         {
-            $anchors{ $s[ 1 ] } = [ $s[ 5 ], $s[ 4 ], $s[ 3 ] ]; #TE type, mate orientation, percent ID. This could be a memory issue (possibly dump out to a file and then use unix join to intersect with the bed)
+            if( $clean )
+            {
+                #delete the intermediate files
+                unlink( glob( qq[$$.*] ) ) or die qq[Failed to remove intermediate files: $!];
+            }
+            print qq[Failed to find any candidate reads - exiting];
+            exit;
         }
-    }
-    close( $efh );
-    
-    if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[Alignment did not complete correctly\n];}
-    
-    #now put all the anchors together into a single file per type
-    open( my $afh, qq[>>$output] ) or die $!;
-    open( my $cfh, $candidatesBed ) or die $!;
-    while( my $anchor = <$cfh> )
-    {
-        chomp( $anchor );
-        my @s = split( /\t/, $anchor );
-        if( defined( $anchors{ $s[ 3 ] } ) )
-        {
-            my $mate_orientation = $anchors{ $s[ 3 ] }[ 1 ];
-            my $type = $anchors{ $s[ 3 ] }[ 0 ];
-            #note the anchor orientation is contained is 3rd last, then mate orientation 2nd entry, and then percent id is last
-            print $afh qq[$s[0]\t$s[1]\t$s[2]\t$type\t$s[3]\t$s[4]\t$mate_orientation\t].$anchors{ $s[ 3 ] }[ 2 ].qq[\n];
-        }
-        else
-        {
-            print $afh qq[$s[0]\t$s[1]\t$s[2]\tunknown\t$s[3]\t$s[4]\n];
-        }
-    }
-    close( $afh );close( $cfh );
-    undef( %anchors );
-    
-    #if running split-read mode, then run exonerate on these sequences too
-    if( $srmode && -s $clipFasta )
-    {
-        open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $clipFasta $refsFasta | egrep "^INFO|completed" | uniq | ] ) or die qq[Exonerate failed to run: $!];
-        print qq[Parsing split-read alignments....\n];
-        open( my $cofh, qq[>$srOutput] ) or die qq[Failed to create clipped candidates output file: $!\n];
-        my $lastLine = '';
-        my %readsAligned;
+        
+        #run exonerate and parse the output from the stream (dump out hits for different refs to diff temp files)
+        #output format:                                                    read hitlen %id +/- refName
+        open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $candidatesFasta $refsFasta | egrep "^INFO|completed" | ] ) or die qq[Exonerate failed to run: $!];
+        print qq[Parsing PE alignments....\n];
+        my $lastLine;
+        my %anchors;
         while( my $hit = <$efh> )
         {
             chomp( $hit );
@@ -593,38 +561,85 @@ sub _findCandidates
             #    check min identity	  check min length
             if( $s[ 3 ] >= $id && $s[ 2 ] >= $length )
             {
-                #get the readname
-                my @readDetails = split( /###/, $s[ 1 ] );
-                
-                #               chr                pos              pos          TE     readname            flag             cigar        align_strand  insertSize
-                my $print = qq[$readDetails[1]\t$readDetails[2]\t$readDetails[2]\t$s[5]\t$readDetails[0]\t$readDetails[3]\t$readDetails[4]\t$s[4]\t$s[3]\t$readDetails[5]\n];
-                if( $print ne $lastLine )
-                {
-                    print $cofh $print;
-                }
-                $readsAligned{ $readDetails[ 0 ] } = 1;
-                $lastLine = $print;
+                $anchors{ $s[ 1 ] } = [ $s[ 5 ], $s[ 4 ], $s[ 3 ] ]; #TE type, mate orientation, percent ID. This could be a memory issue (possibly dump out to a file and then use unix join to intersect with the bed)
             }
         }
         close( $efh );
         
-        #now get all the reads that didnt align to a TE and annotate them as unknown type
-        open( my $tfh, $clipFasta )  or die $!;
-        while( my $l = <$tfh> )
+        if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[Alignment did not complete correctly\n];}
+        
+        #now put all the anchors together into a single file per type
+        open( my $afh, qq[>>$output] ) or die $!;
+        open( my $cfh, $candidatesBed ) or die $!;
+        while( my $anchor = <$cfh> )
         {
-            next unless $l =~ /^>/;
-            $l = substr( $l, 1 );
-            my @readDetails = split( /###/, $l );
-            if( ! $readsAligned{ $readDetails[ 0 ] } )
+            chomp( $anchor );
+            my @s = split( /\t/, $anchor );
+            if( defined( $anchors{ $s[ 3 ] } ) )
             {
-                my $print = qq[$readDetails[1]\t$readDetails[2]\t$readDetails[2]\tunknown\t$readDetails[0]\t$readDetails[3]\t$readDetails[4]\n];
-                print $cofh $print;
+                my $mate_orientation = $anchors{ $s[ 3 ] }[ 1 ];
+                my $type = $anchors{ $s[ 3 ] }[ 0 ];
+                #note the anchor orientation is contained is 3rd last, then mate orientation 2nd entry, and then percent id is last
+                print $afh qq[$s[0]\t$s[1]\t$s[2]\t$type\t$s[3]\t$s[4]\t$mate_orientation\t].$anchors{ $s[ 3 ] }[ 2 ].qq[\n];
+            }
+            else
+            {
+                print $afh qq[$s[0]\t$s[1]\t$s[2]\tunknown\t$s[3]\t$s[4]\n];
             }
         }
-        close( $cofh );
+        close( $afh );close( $cfh );
+        undef( %anchors );
         
-        if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[SR alignment did not complete correctly\n];}
-    }
+        #if running split-read mode, then run exonerate on these sequences too
+        if( $srmode && -s $clipFasta )
+        {
+            open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $clipFasta $refsFasta | egrep "^INFO|completed" | uniq | ] ) or die qq[Exonerate failed to run: $!];
+            print qq[Parsing split-read alignments....\n];
+            open( my $cofh, qq[>$srOutput] ) or die qq[Failed to create clipped candidates output file: $!\n];
+            my $lastLine = '';
+            my %readsAligned;
+            while( my $hit = <$efh> )
+            {
+                chomp( $hit );
+                $lastLine = $hit;
+                last if ( $hit =~ /^-- completed/ );
+                
+                my @s = split( /\s+/, $hit );
+                #    check min identity	  check min length
+                if( $s[ 3 ] >= $id && $s[ 2 ] >= $length )
+                {
+                    #get the readname
+                    my @readDetails = split( /###/, $s[ 1 ] );
+                    
+                    #               chr                pos              pos          TE     readname            flag             cigar        align_strand  insertSize
+                    my $print = qq[$readDetails[1]\t$readDetails[2]\t$readDetails[2]\t$s[5]\t$readDetails[0]\t$readDetails[3]\t$readDetails[4]\t$s[4]\t$s[3]\t$readDetails[5]\n];
+                    if( $print ne $lastLine )
+                    {
+                        print $cofh $print;
+                    }
+                    $readsAligned{ $readDetails[ 0 ] } = 1;
+                    $lastLine = $print;
+                }
+            }
+            close( $efh );
+            
+            #now get all the reads that didnt align to a TE and annotate them as unknown type
+            open( my $tfh, $clipFasta )  or die $!;
+            while( my $l = <$tfh> )
+            {
+                next unless $l =~ /^>/;
+                $l = substr( $l, 1 );
+                my @readDetails = split( /###/, $l );
+                if( ! $readsAligned{ $readDetails[ 0 ] } )
+                {
+                    my $print = qq[$readDetails[1]\t$readDetails[2]\t$readDetails[2]\tunknown\t$readDetails[0]\t$readDetails[3]\t$readDetails[4]\n];
+                    print $cofh $print;
+                }
+            }
+            close( $cofh );
+            
+            if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[SR alignment did not complete correctly\n];}
+        }
     }
     
     if( $clean )
@@ -807,28 +822,7 @@ sub _findInsertions
                     RetroSeq::Utilities::_removeDups( $hetCalls, $rmdupHetCalls );
                     $typeBEDFiles{ $currentType }{het} = $rmdupHetCalls;
                 }
-=pod                
-                #if a bed file of places to filter out was provided e.g. ref TEs
-                if( %filterBEDs )
-                {
-                    print qq[Filtering reference elements for: $currentType\n];
-                    
-                    #remove the regions specified in the exclusion BED file
-                    my $filtered = qq[$rmdupHomCalls.refFiltered];
-                    if( $filterBEDs{ $currentType } )
-                    {
-                        RetroSeq::Utilities::filterOutRegions( $rmdupHomCalls, $filterBEDs{ $currentType }, $filtered );
-                        $typeBEDFiles{ $currentType }{hom} = $filtered;
-                        
-                        if( $hets && -f $rmdupHetCalls && -s $rmdupHetCalls > 0 )
-                        {
-                            $filtered = qq[$rmdupHetCalls.refFiltered];
-                            RetroSeq::Utilities::filterOutRegions( $rmdupHetCalls, $filterBEDs{ $currentType }, $filtered );
-                            $typeBEDFiles{ $currentType }{het} = $filtered;
-                        }
-                    }
-                }
-=cut                
+                
                 #remove the temporary files for this 
                 if( $clean )
                 {
@@ -1312,11 +1306,18 @@ sub _getCandidateTEReadNames
     my $candidatesBed = shift;
     my $clippedFasta = shift;
     my $discordantMatesBed = shift;
+    my $singleEndsBed = shift;
     
     my %candidates;
     my $ffh;
     if( defined($candidatesFasta) ){open( $ffh, qq[>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];}
     open( my $afh, qq[>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
+    my $sebfh;
+    if( $singleEndsBed )
+    {
+        open( $sebfh, qq[>>$singleEndsBed] ) or die qq[ERROR: Failed to single ends BED file: $!\n];
+    }
+    
     my $cfh;
     if( $minSoftClip )
     {
@@ -1363,15 +1364,16 @@ sub _getCandidateTEReadNames
         
         if( $supporting > 0 )
         {
-            if( $supporting == 1 )
+            if( $supporting == 1 ) #single-ended mapped
             {
                $candidates{ $name } = $flag & $$BAMFLAGS{'1st_in_pair'} ? 2 : 1; #mate is recorded
-                   
+               
                my $pos = $sam[ 3 ];
                my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
                print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\n];
+               print $sebfh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\n] if( $singleEndsBed );
             }
-            elsif( $supporting == 2 )
+            elsif( $supporting == 2 ) #discordantly mapped
             {
                $candidates{ $name } = $flag & $$BAMFLAGS{'1st_in_pair'} ? 2 : 1; #mate is recorded
                    
@@ -1427,7 +1429,7 @@ sub _getCandidateTEReadNames
     }
     close( $bfh );
     if( defined($candidatesFasta) ){close( $ffh );}
-    close( $afh );
+    close( $afh );close( $sebfh ) if( $singleEndsBed );
     if( $minSoftClip ){close( $cfh );}
     close( $dfh );
     

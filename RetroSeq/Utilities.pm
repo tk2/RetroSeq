@@ -53,7 +53,7 @@ sub filterOutRegions
     {
         chomp( $l );
         my @s = split( /\s+/, $l );
-        print $tfh qq[$s[0]\t].int((($s[1]+$s[2])/2)-50).qq[\t].int((($s[1]+$s[2])/2)+50).qq[\t$s[1]\n];
+        print $tfh qq[$s[0]\t].int((($s[1]+$s[2])/2)).qq[\t].int((($s[1]+$s[2])/2)+1).qq[\t$s[1]\n];
         $start ++;
     }
     close( $ifh );close( $tfh );
@@ -80,63 +80,9 @@ sub filterOutRegions
     }
     close( $ifh );
     
-#    my $cmd = qq[windowBED -a $$.tofilter.bed -b $filterBED -w 100 -v > $$.keep.bed];
-#    system( $cmd ) == 0 or die qq[Failed to run windowBED: $cmd\n];   
-#    my $filtered = `wc -l $outputBED`;chomp( $filtered );
-    
     my $retained = scalar( keys( %keep ) );
     print qq[Started with $start Retained $retained\n];
     return $retained;
-
-=pod    
-    my @calls;
-    open( my $ifh, $inputBED ) or die qq[Failed to open $inputBED: $!\n];
-    while( my $line = <$ifh> ){chomp($line);push(@calls,$line);}
-    close( $ifh );
-    
-    open( my $ffh, $filterBED ) or die $!;
-    my $filtered = 0;
-    while( my $region = <$ffh> )
-    {
-        chomp( $region );
-        my @s = split( /\t/, $region );
-        foreach(my $i=0;$i<@calls;$i++)
-        {
-	    next unless $calls[$i];
-            my @s1 = split( /\t/, $calls[$i] );
-            if( $s[ 0 ] eq $s1[ 0 ] && ( 
-                ( $s1[ 1 ] >= $s[ 1 ] && $s1[ 2 ] <= $s[ 2 ] ) #TE call is totally enclosed in region
-                ||
-                ( abs( $s1[ 1 ] - $s[ 1 ] ) < $FILTER_WINDOW )
-                ||
-                ( abs( $s1[ 1 ] - $s[ 2 ] ) < $FILTER_WINDOW )
-                ||
-                ( abs( $s1[ 2 ] - $s[ 1 ] ) < $FILTER_WINDOW )
-                ||
-                ( abs( $s1[ 2 ] - $s[ 2 ] ) < $FILTER_WINDOW )
-                ||
-		( $s1[ 1 ] >= $s[ 1 ] && $s1[ 1 ] <= $s[ 2 ] )
-		||
-		( $s1[ 2 ] >= $s[ 1 ] && $s1[ 2 ] <= $s[ 2 ] )
-		||
-                ( $s[ 1 ] >= $s1[ 1 ] && $s[ 2 ] <= $s1[ 2 ] )  #TE in ref in enclosed within the called TE region
-                )
-              )
-            {
-                print qq[Excluding region: $calls[ $i ]\n];
-                undef( $calls[ $i ] );
-                $filtered ++;
-            }
-        }
-    }
-    close( $ffh );
-
-    open( my $ofh, qq[>$outputBED] ) or die $!;
-    foreach my $call ( @calls ){if(defined( $call ) ){ print $ofh qq[$call\n]; } }
-    close( $ofh );
-
-    return $filtered;
-=cut
 }
 
 sub getCandidateBreakPointsDepth
