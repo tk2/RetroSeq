@@ -470,7 +470,7 @@ sub _findCandidates
                     print $tofh qq[$s[0]\t$s[1]\t$s[2]\t$type\t$s[3]\t$s[4]\t].$reads{ $s[ 3 ] }.qq[\t90\n];
                 }
             }
-            close( $bfh );
+            close( $bfh );close( $tofh );
             
             #now filter the fasta file to remove these reads if doing alignment step subsequently
             if( $doAlign )
@@ -496,6 +496,7 @@ sub _findCandidates
         #now also print the single end mapped reads (if user choose that option)
         if( $singleEnds )
         {
+            open( my $tofh, qq[>>$output] ) or die $!;
             open( my $sefh, qq[$$.single_ends.bed] ) or die qq[Failed to open single ends BED file\n];
             while( my $line = <$sefh> )
             {
@@ -503,9 +504,8 @@ sub _findCandidates
                 my @s = split( /\t/, $line );
                 print $tofh qq[$s[0]\t$s[1]\t$s[2]\tunknown\t$s[3]\t$s[4]\t\t90\n];
             }
-            close( $sefh );
+            close( $sefh );close( $tofh );
         }
-        close( $tofh );
     }
     
     if( $doAlign )
