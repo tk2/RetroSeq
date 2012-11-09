@@ -713,7 +713,6 @@ sub _findInsertions
         if( $start && $end )
         {
             system(qq[echo -e "$chr\t$start\t$end" > $$.region.bed ]) == 0 or die qq[failed to defined region];
-            #system(qq[windowBED -a $sortedCandidates -b $$.region.bed > $$.merge.PE.sorted.region.tab]) == 0 or die qq[Failed to extract region from reads];
             system(qq/awk '\$1=="$chr"&&\$2>$start&&\$3<$end' $merged > $$.merge.PE.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
             $merged = qq[$$.merge.PE.region.tab];
         }
@@ -816,7 +815,7 @@ sub _findInsertions
                 $typeBEDFiles{ $currentType }{hom} = $rmdupHomCalls if( -f $rmdupHomCalls && -s $rmdupHomCalls > 0 );
                 
                 my $rmdupHetCalls;
-                if( $hets && -f $hetCalls && -s $hetCalls > 0 )
+                if( -s $hetCalls > 0 )
                 {
                     $rmdupHetCalls = qq[$$.raw_calls.3.$currentType.het.rmdup.bed];
                     RetroSeq::Utilities::_removeDups( $hetCalls, $rmdupHetCalls );
@@ -860,11 +859,8 @@ sub _findInsertions
             my $f = $typeBEDFiles{$type}{hom};
             system( qq[cat $f >> $$.PE.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
             
-            if( $hets )
-            {
-                $f = $typeBEDFiles{$type}{het}; 
-                system( qq[cat $f >> $$.PE.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
-            }
+            $f = $typeBEDFiles{$type}{het}; 
+            system( qq[cat $f >> $$.PE.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
         }
         
         if( -f $unknownHoms )
@@ -877,7 +873,7 @@ sub _findInsertions
             }
         }
         
-        if( $hets && defined( $unknownHets ) && -s $unknownHets )
+        if( defined( $unknownHets ) && -s $unknownHets )
         {
             my $removed = RetroSeq::Utilities::filterOutRegions( $unknownHets, qq[$$.PE.allcalls.bed], qq[$$.unknownHets.filtered] );
             if( $removed > 0 )
@@ -1129,10 +1125,7 @@ sub _filterCallsBedMinima
 	open( my $ifh, $bedin ) or die $!;
 	open( my $homsfh, qq[>$bedoutHoms] ) or die $!;
 	my $hetsfh = undef;
-	if( $hets )
-	{
-	    open( $hetsfh, qq[>$bedoutHets] ) or die $!;
-	}
+	open( $hetsfh, qq[>$bedoutHets] ) or die $!;
 	
 	open( my $dfh, qq[>>$thrown_out_file] ) or die $!;
 	my %breakpointsTested;
@@ -1172,7 +1165,7 @@ sub _filterCallsBedMinima
                 print qq[Hom breakpoint score: $ratio Flag: $flag\n];
                 print $homsfh $call.qq[\t$flag\n];
             }
-            elsif( $hets )
+            else
             {
                 print qq[Het breakpoint score: $ratio Flag: $flag\n];
                 print $hetsfh $call.qq[\t$flag\n];
@@ -1182,7 +1175,7 @@ sub _filterCallsBedMinima
 	}
 	close( $ifh );
 	close( $homsfh );
-	close( $hetsfh ) if( $hets );
+	close( $hetsfh );
 	close( $dfh );
 }
 
