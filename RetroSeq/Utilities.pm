@@ -872,7 +872,17 @@ sub convertToRegionBedPairsWindowBED
             {
                 #done - call the region
                 my $size = $regionEndFwd - $regionStartFwd; $size = 1 unless $size > 0;
-                print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t+\t$reads_in_regionFwd\n] if( $reads_in_regionFwd >= $minReads && $reads_with_idFwd >= ( $minReads * 0.5 ) );
+                if( $reads_in_regionFwd >= $minReads )
+                {
+                    if( $reads_with_idFwd >= ( $minReads * 0.5 ) )
+                    {
+                        print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t+\t$reads_in_regionFwd\n];
+                    }
+                    else
+                    {
+                        print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\tunknown\t+\t$reads_in_regionFwd\n];
+                    }
+                }
                 
                 $reads_in_regionFwd = 1;
                 $regionStartFwd = $s[ 1 ];
@@ -887,8 +897,17 @@ sub convertToRegionBedPairsWindowBED
             elsif( $s[ 1 ] - $regionEndFwd > $max_intra_gap )
             {
                 #call the region
-                print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t+\t$reads_in_regionFwd\n] if( $reads_in_regionFwd >= $minReads && $reads_with_idFwd >= ( $minReads * 0.5 ) );
-print "POS $regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t$reads_in_regionFwd\t$reads_with_idFwd\n"  if( $reads_in_regionFwd >= $minReads && $reads_with_idFwd >= ( $minReads * 0.5 ) );
+                if( $reads_in_regionFwd >= $minReads )
+                {
+                    if( $reads_with_idFwd >= ( $minReads * 0.5 ) )
+                    {
+                        print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t+\t$reads_in_regionFwd\n];
+                    }
+                    else
+                    {
+                        print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\tunknown\t+\t$reads_in_regionFwd\n]
+                    }
+                }
                 
                 $reads_in_regionFwd = 1;
                 $regionStartFwd = $s[ 1 ];
@@ -925,8 +944,17 @@ print "POS $regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t$reads_in_regionF
             elsif( $s[ 0 ] ne $regionChrRev ) #on next chr
             {
                 #done - call the region
-                print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t-\t$reads_in_regionRev\n] if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
-                
+                if( $reads_in_regionRev >= $minReads )
+                {
+                    if( $reads_with_idRev >= ( $minReads * 0.5 ) )
+                    {
+                        print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t-\t$reads_in_regionRev\n]
+                    }
+                    else
+                    {
+                        print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\tunknown\t-\t$reads_in_regionRev\n]
+                    }
+                }
                 $reads_in_regionRev = 1;
                 $regionStartRev = $s[ 1 ];
                 $regionEndRev = $s[ 2 ];
@@ -940,9 +968,17 @@ print "POS $regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t$reads_in_regionF
             elsif( $s[ 1 ] - $regionEndRev > $max_intra_gap )
             {
                 #call the region
-                print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t-\t$reads_in_regionRev\n] if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
-print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionRev\t$reads_with_idRev\n" if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
-                
+                if( $reads_in_regionRev >= $minReads )
+                {
+                    if( $reads_with_idRev >= ( $minReads * 0.5 ) )
+                    {
+                        print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t-\t$reads_in_regionRev\n];
+                    }
+                    else
+                    {
+                        print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\tunknown\t-\t$reads_in_regionRev\n];
+                    }
+                }
                 $reads_in_regionRev = 1;
                 $regionStartRev = $s[ 1 ];
                 $regionEndRev = $s[ 2 ];
@@ -966,10 +1002,22 @@ print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionR
 	    }
 	}
 	
-	print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t+\t$reads_in_regionFwd\n] if( $reads_in_regionFwd >= $minReads && $reads_with_idFwd >= ( $minReads * 0.5 ) );
-	print "POS $regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t$reads_in_regionFwd\n" if( $reads_in_regionFwd >= $minReads && $reads_with_idFwd >= ( $minReads * 0.5 ) );
-	print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t-\t$reads_in_regionRev\n] if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
-	print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionRev\n" if( $reads_in_regionRev >= $minReads && $reads_with_idRev >= ( $minReads * 0.5 ) );
+	if( $reads_in_regionFwd >= $minReads )
+	{
+	    if( $reads_with_idFwd >= ( $minReads * 0.5 ) )
+	    {
+	        print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t+\t$reads_in_regionFwd\n]
+	    }
+	    else{print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\tunknown\t+\t$reads_in_regionFwd\n]}
+	}
+	if( $reads_in_regionRev >= $minReads )
+	{
+	    if( $reads_with_idRev >= ( $minReads * 0.5 ) )
+	    {
+	        print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t-\t$reads_in_regionRev\n];
+	    }
+	    else{print $negfh qq[$regionChrRev\t$regionStartRev\t$regionEndRev\tunknown\t-\t$reads_in_regionRev\n];}
+	}
     
 	close( $posfh );close( $negfh );
 	
@@ -980,17 +1028,27 @@ print "NEG $regionChrRev\t$regionStartRev\t$regionEndRev\t$id\t$reads_in_regionR
 	open( my $ofh, qq[>$outputbed] ) or die $!;
 	open( my $ifh, qq[$$.$id.wb.out] ) or die qq[failed to read windowBED output: $!];
 	my $regionsCalled = 0;
-#	my $currentStart = -1; #if there are two hits for this cluster - pick the closest match
 	while( my $line = <$ifh> )
 	{
 	    my @s = split( /\t/, $line );
 	    
-#	    if( $currentStart == -1 ){}
+	    #check if at least one of the clusters is from the TE type
+	    if( $s[ 3 ] ne $id && $s[ 9 ] ne $id )
+	    {
+	        print qq[Skipping cluster: unknown type\n];
+	        next;
+	    }
+	    
 	    #do some sanity checks??
 	    my $totalReads = $s[ 5 ] + $s[ 11 ];
 	    my $end = $s[2]>$s[8]?$s[2]:$s[8];
 	    my $start = $s[1]<$s[7]?$s[1]:$s[7];
-	    print $ofh qq[$s[0]\t$start\t$end\t$s[3]\t$totalReads\t$PASS\n];
+	    
+	    if( $s[ 3 ] ne $id || $s[ 9 ] ne $id )
+	    {
+	        print qq[HYBRID: $s[0]\t$start\t$end\t$id\t$totalReads\t$PASS\n];
+	    }
+	    print $ofh qq[$s[0]\t$start\t$end\t$id\t$totalReads\t$PASS\n];
 	    $regionsCalled ++;
 	}
 	close( $ofh );

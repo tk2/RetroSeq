@@ -145,7 +145,7 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q 
 USAGE
     
     croak qq[Cant find BAM file: $bam] unless -f $bam || -l $bam;
-    croak qq[Cant find TE tab file: $eRefFofn] if( $doAlign && ! -f $eRefFofn );
+    croak qq[Cant find TE probes sequence file (-eref parameter)] if( $doAlign && ( ! $eRefFofn || ! -f $eRefFofn ) );
     
     my $erefs;
     if( $doAlign )
@@ -445,7 +445,7 @@ sub _findCandidates
         {
             chomp( $file );
             print qq[Screening for hits to: $type\n];
-            system( qq[intersectBED -a $discordantMatesBed -b $file -u -f 0.5 | awk -F"\t" '{print \$4,\$5}' > $$.$type.mates.bed] ) == 0 or die qq[Failed to run intersectBED];
+            system( qq[intersectBED -a $discordantMatesBed -b $file -u | awk -F"\t" '{print \$4,\$5}' > $$.$type.mates.bed] ) == 0 or die qq[Failed to run intersectBED];
             
             #print the mates (i.e. the anchors) of these reads into the discovery output file
             #first load up the readnames
@@ -745,6 +745,10 @@ sub _findInsertions
         close( $tfh );
     }
     
+    #pull out the reads categorised as 'unknown' (if any exist in the file) into a separate file
+    my $unknownCandidatesFile = qq[$$.merge.PE.sorted.unknown.tab];
+    system(qq[awk -F"\t" '{if(\$4=="unknown"){print \$1"\t"\$2"\t"\$3"\tunknown\t"\$6}}' $sortedCandidates > $$.merge.PE.sorted.unknown.tab]) == 0 or die qq[Failed to extract unknown candidate reads\n];
+    
     open( my $tfh, $sortedCandidates ) or die qq[Failed to open merged tab file: $!\n];
     my %typeBEDFiles;
     my $currentType = '';
@@ -754,6 +758,7 @@ sub _findInsertions
     open( my $dfh, qq[>$raw_candidates] ) or die $!;
     print $dfh qq[FILTER: chr\tstart\tend\ttype\_sample\tL_Fwd_both\tL_Rev_both\tL_Fwd_single\tL_Rev_single\tR_Fwd_both\tR_Rev_both\tR_Fwd_single\tR_Rev_single\tL_Last_both\tR_First_both\tDist\n];
     close( $dfh );
+    my $currentTypeAnchorsFile;
     while( my $line = <$tfh> )
     {
         chomp( $line );
@@ -762,7 +767,8 @@ sub _findInsertions
         {
             $currentType = $s[ 3 ];
             print qq[PE Call: $currentType\n];
-            open( $cfh, qq[>$$.$currentType.pe_anchors.bed] ) or die $!;
+            $currentTypeAnchorsFile = qq[$$.$currentType.pe_anchors.bed];
+            open( $cfh, qq[>$currentTypeAnchorsFile] ) or die $!;
         }
         elsif( $currentType ne $s[ 3 ] || eof( $tfh ) )
         {
@@ -773,7 +779,16 @@ sub _findInsertions
                 #convert to a region BED (removing any candidates with very low numbers of reads)
                 print qq[$currentType Calling initial rough boundaries of insertions....\n];
                 my $rawTECalls1 = qq[$$.raw_calls.1.$currentType.tab];
-                my $numRegions = RetroSeq::Utilities::convertToRegionBedPairsWindowBED( qq[$$.$currentType.pe_anchors.bed], $DEFAULT_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, 1, 0, $rawTECalls1 );
+                
+                #add in the unknown mates (if any were present)
+                if( -s $unknownCandidatesFile )
+                {
+                    my $newfile = qq[$$.$currentType.pe_anchors.inc_unknown.bed];
+                    system(qq[cat $$.$currentType.pe_anchors.bed $unknownCandidatesFile | sort -k1,1d -k2,2n > $newfile]) == 0 or die qq[Failed to add in unknown candidate reads to $currentType file\n];
+                    $currentTypeAnchorsFile = $newfile;
+                }
+                
+                my $numRegions = RetroSeq::Utilities::convertToRegionBedPairsWindowBED( $currentTypeAnchorsFile, $DEFAULT_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, 1, 0, $rawTECalls1 );
                 
                 if( $numRegions == 0 )
                 {
