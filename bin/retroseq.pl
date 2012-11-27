@@ -790,59 +790,51 @@ sub _findInsertions
                 
                 my $numRegions = RetroSeq::Utilities::convertToRegionBedPairsWindowBED( $currentTypeAnchorsFile, $DEFAULT_MIN_CLUSTER_READS, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_CLUSTER_DIST, 1, 0, $rawTECalls1 );
                 
-                if( $numRegions == 0 )
+                if( $numRegions > 0 )
                 {
-                    unlink( qq[$$.$currentType.pe_anchors.bed], $rawTECalls1 ) or die qq[Failed to delete temp files\n] if( $clean );
+                    #if a bed filter file of ref types was provided - then apply te filter now to reduce number of calls to test
+                    if( %filterBEDs && $filterBEDs{ $currentType } )
+                    {
+                        print qq[Filtering reference elements for: $currentType\n];
+                        
+                        #remove the regions specified in the exclusion BED file
+                        my $rawTECalls1Filtered = qq[$$.raw_calls.1.$currentType.filtered.tab];
+                        RetroSeq::Utilities::filterOutRegions( $rawTECalls1, $filterBEDs{ $currentType }, $rawTECalls1Filtered );
+                        $rawTECalls1 = $rawTECalls1Filtered;
+                    }
                     
-                    $readCount = 0;
-                    $currentType = $s[ 3 ];
-                    print qq[PE Call: $currentType\n];
-                    open( $cfh, qq[>$$.$currentType.pe_anchors.bed] ) or die $!;
-                    next;
-                }
-                
-                #if a bed filter file of ref types was provided - then apply te filter now to reduce number of calls to test
-                if( %filterBEDs && $filterBEDs{ $currentType } )
-                {
-                    print qq[Filtering reference elements for: $currentType\n];
+                    #remove extreme depth calls
+                    print qq[Removing calls with extremely high depth (>$depth)....\n];
+                    my $rawTECalls2 = qq[$$.raw_calls.2.$currentType.tab];
+                    _removeExtremeDepthCalls( $rawTECalls1, \@bams, $depth, $rawTECalls2, $raw_candidates );
                     
-                    #remove the regions specified in the exclusion BED file
-                    my $rawTECalls1Filtered = qq[$$.raw_calls.1.$currentType.filtered.tab];
-                    RetroSeq::Utilities::filterOutRegions( $rawTECalls1, $filterBEDs{ $currentType }, $rawTECalls1Filtered );
-                    $rawTECalls1 = $rawTECalls1Filtered;
-                }
-                
-                #remove extreme depth calls
-                print qq[Removing calls with extremely high depth (>$depth)....\n];
-                my $rawTECalls2 = qq[$$.raw_calls.2.$currentType.tab];
-                _removeExtremeDepthCalls( $rawTECalls1, \@bams, $depth, $rawTECalls2, $raw_candidates );
-                
-                #new calling filtering code
-                print qq[Filtering and refining candidate regions into calls....\n];
-                my $homCalls = qq[$$.raw_calls.3.$currentType.hom.bed];
-                my $hetCalls = qq[$$.raw_calls.3.$currentType.het.bed];
-                
-                _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
-                
-                #remove close duplicated calls
-                my $rmdupHomCalls = qq[$$.raw_calls.3.$currentType.hom.rmdup.bed];
-                RetroSeq::Utilities::_removeDups( $homCalls, $rmdupHomCalls );
-                $typeBEDFiles{ $currentType }{hom} = $rmdupHomCalls if( -f $rmdupHomCalls && -s $rmdupHomCalls > 0 );
-                
-                my $rmdupHetCalls;
-                if( -s $hetCalls > 0 )
-                {
-                    $rmdupHetCalls = qq[$$.raw_calls.3.$currentType.het.rmdup.bed];
-                    RetroSeq::Utilities::_removeDups( $hetCalls, $rmdupHetCalls );
-                    $typeBEDFiles{ $currentType }{het} = $rmdupHetCalls;
-                }
-                
-                #remove the temporary files for this 
-                if( $clean )
-                {
-                    unlink( qq[$$.raw_reads.0.$currentType.tab], qq[$$.raw_calls.1.$currentType.tab], qq[$$.raw_calls.2.$currentType.tab] ) or die qq[Failed to delete temp files\n];
-                    unlink( $homCalls ) if( -f $homCalls && -s $homCalls == 0 );
-                    unlink( $hetCalls ) if ( -f $hetCalls && -s $hetCalls == 0 );
+                    #new calling filtering code
+                    print qq[Filtering and refining candidate regions into calls....\n];
+                    my $homCalls = qq[$$.raw_calls.3.$currentType.hom.bed];
+                    my $hetCalls = qq[$$.raw_calls.3.$currentType.het.bed];
+                    
+                    _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
+                    
+                    #remove close duplicated calls
+                    my $rmdupHomCalls = qq[$$.raw_calls.3.$currentType.hom.rmdup.bed];
+                    RetroSeq::Utilities::_removeDups( $homCalls, $rmdupHomCalls );
+                    $typeBEDFiles{ $currentType }{hom} = $rmdupHomCalls if( -f $rmdupHomCalls && -s $rmdupHomCalls > 0 );
+                    
+                    my $rmdupHetCalls;
+                    if( -s $hetCalls > 0 )
+                    {
+                        $rmdupHetCalls = qq[$$.raw_calls.3.$currentType.het.rmdup.bed];
+                        RetroSeq::Utilities::_removeDups( $hetCalls, $rmdupHetCalls );
+                        $typeBEDFiles{ $currentType }{het} = $rmdupHetCalls;
+                    }
+                    
+                    #remove the temporary files for this 
+                    if( $clean )
+                    {
+                        unlink( qq[$$.raw_reads.0.$currentType.tab], qq[$$.raw_calls.1.$currentType.tab], qq[$$.raw_calls.2.$currentType.tab] ) or die qq[Failed to delete temp files\n];
+                        unlink( $homCalls ) if( -f $homCalls && -s $homCalls == 0 );
+                        unlink( $hetCalls ) if ( -f $hetCalls && -s $hetCalls == 0 );
+                    }
                 }
             }
             
@@ -851,7 +843,8 @@ sub _findInsertions
             $readCount = 0;
             $currentType = $s[ 3 ];
             print qq[PE Call: $currentType\n];
-            open( $cfh, qq[>$$.$currentType.pe_anchors.bed] ) or die $!;
+            $currentTypeAnchorsFile = qq[$$.$currentType.pe_anchors.bed];
+            open( $cfh, qq[>$currentTypeAnchorsFile] ) or die $!;
         }
         else
         {
