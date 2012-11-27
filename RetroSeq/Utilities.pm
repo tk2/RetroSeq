@@ -37,7 +37,7 @@ our $PASS = 8;
 our $FILTER_NAMES = ['Fail', 'HomBreakDepth', 'MinReads', 'MinReadsFlanks', 'MinReadsBlue', 'BothRatioFail', 'OneRatioFail', 'DistanceThreshold' ];
 our $FILTER_DESC = ['Unknown fail', 'HomBreakDepth', 'Not enough supporting reads', 'Not enough supporting reads on either flanking sides', 'Not enough supporting multi-mapped reads', 'Neither side has required ratio of fwd:rev reads', 'One side has required ratio of fwd:rev reads', 'Distance between 3\' and 5\' reads is greater than threshold' ];
 
-our $VERSION = 1.31;
+our $VERSION = 1.32;
 
 sub filterOutRegions
 {
@@ -60,7 +60,7 @@ sub filterOutRegions
     
     #run windowBED to do this - much quicker than the code below!
     my %keep;
-    open( my $kfh, qq[windowBED -a $$.tofilter.bed -b $filterBED -w 30 -v | ] ) or die $!;
+    open( my $kfh, qq[bedtools window -a $$.tofilter.bed -b $filterBED -w 30 -v | ] ) or die $!;
     while( my $l = <$kfh> )
     {
         chomp( $l );
@@ -1022,11 +1022,11 @@ sub convertToRegionBedPairsWindowBED
 	close( $posfh );close( $negfh );
 	
 	my $updownWindow = $max_fwd_rev_gap / 2;
-	system( qq[windowBED -a $$.$id.pos.bed -b $$.$id.neg.bed -l $updownWindow -r $updownWindow > $$.$id.wb.out] ) == 0 or die qq[windowBED failed\n];
+	system( qq[bedtools window -a $$.$id.pos.bed -b $$.$id.neg.bed -l $updownWindow -r $updownWindow > $$.$id.wb.out] ) == 0 or die qq[bedtools window failed\n];
 	
 	#now pair up the clusters by closest end/start positions - use windowBED to cluster
 	open( my $ofh, qq[>$outputbed] ) or die $!;
-	open( my $ifh, qq[$$.$id.wb.out] ) or die qq[failed to read windowBED output: $!];
+	open( my $ifh, qq[$$.$id.wb.out] ) or die qq[failed to read bedtools window output: $!];
 	my $regionsCalled = 0;
 	while( my $line = <$ifh> )
 	{

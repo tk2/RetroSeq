@@ -180,6 +180,7 @@ USAGE
     #test for samtools
     RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16] );
     RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] ) if( $doAlign );
+    RetroSeq::Utilities::checkBinary( q[bedtools] );
     
     _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $minSoftClip, $srOutputFile, $refTEs, $excludeRegionsDis, $doAlign, $singleEnds, $clean );
 }
@@ -234,13 +235,12 @@ USAGE
     #test for samtools
     RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16] );
     RetroSeq::Utilities::checkBinary( q[bcftools] );
+    RetroSeq::Utilities::checkBinary( q[bedtools] );
     
     my @bams;
     my $first = `head -1 $bam`;chomp( $first );
     if( -f $first ) #is this a fofn
     {
-        RetroSeq::Utilities::checkBinary( q[windowBED] );
-        
         open( my $ifh, $bam ) or die qq[failed to BAM fofn: $input\n];
         while(my $file = <$ifh> )
         {
@@ -407,10 +407,10 @@ sub _findCandidates
         }
         close( $tfh );
         
-        #intersectBED with the mates BED file - collect the readnames
-        system( qq[intersectBED -a $discordantMatesBed -b $$.regions_exclude.bed -f 0.5 -u > $$.discordant_mates.remove.bed] ) == 0 or die qq[Failed to run intersectBED to filter];
+        #bedtools intersect with the mates BED file - collect the readnames
+        system( qq[bedtools intersect -a $discordantMatesBed -b $$.regions_exclude.bed -f 0.5 -u > $$.discordant_mates.remove.bed] ) == 0 or die qq[Failed to run bedtools intersect to filter];
         my %reads;
-        open( my $rfh, qq[intersectBED -a $discordantMatesBed -b $$.regions_exclude.bed -f 0.5 -u | awk -F"\t" '{print \$4}' | ] ) or die $!;
+        open( my $rfh, qq[bedtools intersect -a $discordantMatesBed -b $$.regions_exclude.bed -f 0.5 -u | awk -F"\t" '{print \$4}' | ] ) or die $!;
         while( my $l = <$rfh> ){chomp( $l );$reads{ $l } = 1;}
         
         #filter the fasta file on these readnames
@@ -445,7 +445,7 @@ sub _findCandidates
         {
             chomp( $file );
             print qq[Screening for hits to: $type\n];
-            system( qq[intersectBED -a $discordantMatesBed -b $file -u | awk -F"\t" '{print \$4,\$5}' > $$.$type.mates.bed] ) == 0 or die qq[Failed to run intersectBED];
+            system( qq[bedtools intersect -a $discordantMatesBed -b $file -u | awk -F"\t" '{print \$4,\$5}' > $$.$type.mates.bed] ) == 0 or die qq[Failed to run bedtools intersect];
             
             #print the mates (i.e. the anchors) of these reads into the discovery output file
             #first load up the readnames
@@ -977,7 +977,6 @@ sub _findInsertionsSR
         if( $start && $end )
         {
             system(qq[echo -e "$chr\t$start\t$end" > $$.region.bed ]) == 0 or die qq[failed to defined region];
-            #system(qq[windowBED -a $sortedCandidates -b $$.region.bed > $$.merge.SR.sorted.region.tab]) == 0 or die qq[Failed to extract region from reads];
             system(qq/awk '\$1=="$chr"&&\$2>$start&&\$3<$end' $sortedCandidates > $$.merge.SR.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
             $sortedCandidates = qq[$$.merge.SR.sorted.region.tab];
         }
