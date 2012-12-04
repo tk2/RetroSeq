@@ -582,10 +582,6 @@ sub _findCandidates
                 #note the anchor orientation is contained is 3rd last, then mate orientation 2nd entry, and then percent id is last
                 print $afh qq[$s[0]\t$s[1]\t$s[2]\t$type\t$s[3]\t$s[4]\t$mate_orientation\t].$anchors{ $s[ 3 ] }[ 2 ].qq[\n];
             }
-            else
-            {
-                print $afh qq[$s[0]\t$s[1]\t$s[2]\tunknown\t$s[3]\t$s[4]\n];
-            }
         }
         close( $afh );close( $cfh );
         undef( %anchors );
@@ -622,21 +618,6 @@ sub _findCandidates
                 }
             }
             close( $efh );
-            
-            #now get all the reads that didnt align to a TE and annotate them as unknown type
-            open( my $tfh, $clipFasta )  or die $!;
-            while( my $l = <$tfh> )
-            {
-                next unless $l =~ /^>/;
-                $l = substr( $l, 1 );
-                my @readDetails = split( /###/, $l );
-                if( ! $readsAligned{ $readDetails[ 0 ] } )
-                {
-                    my $print = qq[$readDetails[1]\t$readDetails[2]\t$readDetails[2]\tunknown\t$readDetails[0]\t$readDetails[3]\t$readDetails[4]\n];
-                    print $cofh $print;
-                }
-            }
-            close( $cofh );
             
             if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[SR alignment did not complete correctly\n];}
         }

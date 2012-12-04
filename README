@@ -12,13 +12,13 @@ NOTE: retroseq.pl requires samtools, bcftools, exonerate, unix sort to be in the
 
 Discovery mode options:
 
-Usage: retroseq.pl -discover -bam <string> -eref <string> -output <string> [-srmode] [-q <int>] [-id <int>] [-len <int> -noclean]
+Usage: /nfs/users/nfs_t/tk2/code/RetroSeqCheckouts/master/RetroSeq/bin/retroseq.pl -discover -bam <string> -eref <string> -output <string> [-srmode] [-q <int>] [-id <int>] [-len <int> -noclean]
     
     -bam        BAM file of paired reads mapped to reference genome
     -output     Output file to store candidate supporting reads (required for calling step)
     [-refTEs    Tab file with TE type and BED file of reference elements. These will be used to quickly assign discordant reads the TE types and avoid alignment. Using this will speed up discovery dramatically.]
-    [-srmode   Search for split reads in the BAM file]
-    [-minclip  Minimum length of soft clippped portion of read to be considered for split-read analysis. Default is 30bp.]
+    [-srmode    Search for split reads in the BAM file]
+    [-minclip   Minimum length of soft clippped portion of read to be considered for split-read analysis. Default is 30bp.]
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
     [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
     [-id        Minimum percent ID for a match of a read to the transposon references. Default is 90.]
@@ -27,6 +27,7 @@ Usage: retroseq.pl -discover -bam <string> -eref <string> -output <string> [-srm
     [-align     Do the computational expensive exonerate PE discordant mate alignment step]
     [-eref      Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta). Required when the -align option is used.]
     [-len       Minimum length of a hit to the transposon references when using the -align option. Default is 36bp.]
+    [-unmapped  Include single-end mapped reads in list of candidates e.g. when using the -refTEs option and want to include single-end mapped reads too]
 
 Call mode options:
 
