@@ -150,13 +150,14 @@ USAGE
     croak qq[Cant find TE probes sequence file (-eref parameter)] if( $doAlign && ( ! $eRefFofn || ! -f $eRefFofn ) );
     
     my $erefs;
-    if( $doAlign )
+    if( $doAlign || $eRefFofn )
     {
         $erefs = _tab2Hash( $eRefFofn );
         foreach my $type ( keys( %{$erefs} ) )
         {
             if( ! -f $$erefs{$type} ){croak qq[Cant find transposon reference file: ].$$erefs{ $type };}
         }
+        if( ! $doAlign ){print qq[Forcing -align option to be switched on as transposon sequence files were provided\n];$doAlign = 1;}
     }
     
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
