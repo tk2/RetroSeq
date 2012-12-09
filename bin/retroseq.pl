@@ -117,6 +117,8 @@ Usage: $0 -<command> options
             
 NOTE: $0 requires samtools, bcftools, exonerate, unix sort, bedtools to be in the default path
 
+READ NAMES: This software assumes that reads that make up a pair have identical read names in the BAM file
+
 USAGE
 
 ( $discover || $call || $genotype || $help) or die $USAGE;
@@ -361,6 +363,7 @@ sub _findCandidates
         open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
         open( my $dfh, qq[>>$discordantMatesBed] ) or die $!;
         my $currentChr = '';
+        my $readsFound = 0;
         while( my $sam = <$bfh> )
         {
             chomp( $sam );
@@ -384,6 +387,7 @@ sub _findCandidates
                         my $readLen = length( $s[ 9 ] );
                         my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
                         print $dfh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\t$qual\n];
+                        $readsFound ++;
                     }
                     delete( $candidates{ $name } );
                 }
@@ -391,6 +395,11 @@ sub _findCandidates
             if( $currentChr ne $ref && $ref ne '*' ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
         }
         if( $doAlign ){close( $ffh );}close( $dfh );
+        
+        if( $readsFound == 0 )
+        {
+            die qq[ERROR: Failed to recover discordant anchor reads - are your mate read names identical? RetroSeq assumes that mates have identical read names.];
+        }
     }
     undef %candidates; #finished with this hash
     
