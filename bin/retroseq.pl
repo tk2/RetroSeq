@@ -131,7 +131,6 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q 
     -bam        BAM file of paired reads mapped to reference genome
     -output     Output file to store candidate supporting reads (required for calling step)
     [-refTEs    Tab file with TE type and BED file of reference elements. These will be used to quickly assign discordant reads the TE types and avoid alignment. Using this will speed up discovery dramatically.]
-    [-srmode    Search for split reads in the BAM file]
     [-minclip   Minimum length of soft clippped portion of read to be considered for split-read analysis. Default is 30bp.]
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
     [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
@@ -196,7 +195,6 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-s
     -input          Either a single output file from the PE discover stage OR a prefix of a set of files from discovery to be combined for calling OR a fofn of discovery stage output files
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
-    [-srinput       Either a single output from split-read discovery stage OR a prefix of a set of files to be combined for calling (will trigger split-read calling to run)]
     [-hets          Call heterozygous insertions. Default is homozygous.]
     [-filter        Tab file with TE type and BED file of reference elements. These will be filtered out from the calling.]
     [-region        Call a particular chromosome only (chr) OR region (chr:start-end) only]
