@@ -449,9 +449,12 @@ sub _findCandidates
         print qq[Using reference TE locations to assign discordant mates...\n];
         open( my $rfh, $refTEs ) or die $!;
         my @types;
-        while( my ($type, $file) = split( /\t/, <$rfh> ) )
+        while( my $l = <$rfh> )
         {
-            chomp( $file );
+            next if( $l =~ /^#/ );
+            chomp( $l );
+            my ($type, $file) = split( /\t/, $l );
+            die qq[Cant find $type file: $file\n] unless -f $file;
             print qq[Screening for hits to: $type\n];
             system( qq[bedtools intersect -a $discordantMatesBed -b $file -u | awk -F"\t" '{print \$4,\$5}' > $$.$type.mates.bed] ) == 0 or die qq[Failed to run bedtools intersect];
             
@@ -1661,6 +1664,7 @@ sub _tab2Hash
     while( my $entry = <$tfh> )
     {
         chomp( $entry );
+        next if( $entry =~ /^#/ );
         die qq[Tab file should have entries separated by single tab: $file\n] unless $entry =~ /^(.+)(\t)(.+)$/;
         $hash{ $1 } = $3;
     }
