@@ -34,7 +34,7 @@ my $DEFAULT_MAX_DEPTH = 200;
 my $DEFAULT_READS = 10;
 my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 120;
-my $DEFAULT_MIN_CLUSTER_READS = 3;
+my $DEFAULT_MIN_CLUSTER_READS = 2;
 my $DEFAULT_SR_MIN_CLUSTER_READS = 3;
 my $DEFAULT_SR_MIN_UNKNOWN_CLUSTER_READS = 10;
 my $DEFAULT_MAX_CLUSTER_DIST = 4000;
@@ -151,12 +151,24 @@ USAGE
     my $erefs;
     if( $doAlign || $eRefFofn )
     {
+        print qq[Reading -eref file: $eRefFofn\n];
         $erefs = _tab2Hash( $eRefFofn );
         foreach my $type ( keys( %{$erefs} ) )
         {
             if( ! -f $$erefs{$type} ){croak qq[Cant find transposon reference file: ].$$erefs{ $type };}
         }
         if( ! $doAlign ){print qq[Forcing -align option to be switched on as transposon sequence files were provided\n];$doAlign = 1;}
+    }
+    
+    my $refTEsF;
+    if( $refTEs )
+    {
+        print qq[Reading -refTEs file: $refTEs\n];
+        $refTEsF = _tab2Hash( $refTEs );
+        foreach my $type ( keys( %{$refTEsF} ) )
+        {
+            if( ! -f $$refTEsF{$type} ){croak qq[Cant find $type reference TEs file: ].$$refTEsF{ $type };}
+        }
     }
     
     $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
@@ -184,7 +196,7 @@ USAGE
     RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] ) if( $doAlign );
     RetroSeq::Utilities::checkBinary( q[bedtools] );
     
-    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $minSoftClip, $srOutputFile, $refTEs, $excludeRegionsDis, $doAlign, $singleEnds, $clean );
+    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $minSoftClip, $srOutputFile, $refTEsF, $excludeRegionsDis, $doAlign, $singleEnds, $clean );
 }
 elsif( $call )
 {
@@ -328,7 +340,7 @@ sub _findCandidates
     my $readgroups = shift;
     my $minSoftClip = shift;
     my $srOutput = shift;
-    my $refTEs = shift;
+    my $refTEsF = shift;
     my $excludeRegionsDis = shift;
     my $doAlign = shift;
     my $singleEnds = shift;
@@ -444,17 +456,12 @@ sub _findCandidates
     
     #if the user provided a tab file with mappings of TE type to BED file of locations
     #then use this info to assign discordant mates to these types
-    if( $refTEs && -f $refTEs )
+    if( $refTEsF )
     {
         print qq[Using reference TE locations to assign discordant mates...\n];
-        open( my $rfh, $refTEs ) or die $!;
-        my @types;
-        while( my $l = <$rfh> )
+        foreach my $type(keys(%$refTEsF))
         {
-            next if( $l =~ /^#/ );
-            chomp( $l );
-            my ($type, $file) = split( /\t/, $l );
-            die qq[Cant find $type file: $file\n] unless -f $file;
+            my $file = $$refTEsF{ $type };
             print qq[Screening for hits to: $type\n];
             system( qq[bedtools intersect -a $discordantMatesBed -b $file -u | awk -F"\t" '{print \$4,\$5}' > $$.$type.mates.bed] ) == 0 or die qq[Failed to run bedtools intersect];
             
@@ -1665,7 +1672,7 @@ sub _tab2Hash
     {
         chomp( $entry );
         next if( $entry =~ /^#/ );
-        die qq[Tab file should have entries separated by single tab: $file\n] unless $entry =~ /^(.+)(\t)(.+)$/;
+        die qq[Each line of tab delimited file should have two entries separated by single tab: $file\n] unless $entry =~ /^(.+)(\t)(.+)$/;
         $hash{ $1 } = $3;
     }
     close( $tfh );
