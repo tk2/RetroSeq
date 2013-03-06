@@ -189,6 +189,7 @@ sub testBreakPoint
     #test to see if lots of rp's either side
     my $lhsFwdBlue = 0; my $lhsRevBlue = 0; my $rhsFwdBlue = 0; my $rhsRevBlue = 0;
     my $lhsFwdGreen = 0; my $lhsRevGreen = 0; my $rhsFwdGreen = 0; my $rhsRevGreen = 0;
+    my $softClipSupporting = 0;
 	
     #store the last blue read before the b/point, and first blue read after the b/point
 	my $lastBluePos = 0;my $firstBluePos = 100000000000;
@@ -213,34 +214,42 @@ sub testBreakPoint
 	my $cmd = $cmdpre.($refPos-$lhsWindow).qq[-].($refPos+$rhsWindow).qq[ | ].(defined($ignoreRGs) ? qq[ grep -v -f $ignoreRGs |] : qq[]);
 	open( my $tfh, $cmd ) or die $!;
 	my $totalLFwd = 0; my $totalRRev = 0;my $totalSup = 0;
+	my @lhsFwd;my @lhsRev;my @rhsFwd;my @rhsRev;my @soft;
 	while( my $sam = <$tfh> )
 	{
 	    chomp( $sam );
 	    my @s = split( /\t/, $sam );
 	    
-	    my $supporting = isSupportingClusterRead( $s[ 1 ], $s[ 8 ], $s[ 4 ], $minMapQ, $minSoftClip, $s[ 5 ] );
+	    my $supporting = isSupportingClusterRead( $s[ 1 ], $s[ 8 ], $s[ 4 ], $minMapQ, $minSoftClip, $s[ 5 ], $refPos, $s[ 3 ] );
 	    if( $supporting  == 2 )
-	    {$totalSup++;
+	    {
             if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
             {
-                if( $s[ 3 ] < $refPos ){$lhsRevBlue++;}else{$rhsRevBlue++;$firstBluePos = $s[ 3 ] if( $s[ 3 ] < $firstBluePos );}
+                #need to check
+                if( $s[ 3 ] < $refPos ){$lhsRevBlue++;push(@lhsRev, $s[0]);}else{$rhsRevBlue++;$firstBluePos = $s[ 3 ] if( $s[ 3 ] < $firstBluePos );push(@rhsRev, $s[0]);}
             }
             else
             {
-                if( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastBluePos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastBluePos );}else{$rhsFwdBlue++;}
+                if( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastBluePos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastBluePos );push(@lhsFwd, $s[0]);}else{$rhsFwdBlue++;push(@rhsFwd, $s[0]);}
             }
         }
         #        the mate is unmapped
         elsif( $supporting == 1 )
-        {$totalSup++;
+        {
             if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
             {
-                if( $s[ 3 ] < $refPos ){$lhsRevGreen++;}else{$rhsRevGreen++;}
+                if( $s[ 3 ] < $refPos ){$lhsRevGreen++;push(@lhsRev, $s[0]);}else{$rhsRevGreen++;push(@rhsRev, $s[0]);}
             }
             else
             {
-                if( $s[ 3 ] < $refPos ){$lhsFwdGreen++;}else{$rhsFwdGreen++;}
+                if( $s[ 3 ] < $refPos ){$lhsFwdGreen++;push(@lhsFwd, $s[0]);}else{$rhsFwdGreen++;push(@rhsFwd, $s[0]);}
             }
+        }
+        #soft clipped read supporting the breakpoint
+        elsif( $supporting == 3 )
+        {
+            $softClipSupporting ++;
+            push(@soft, $s[0]);
         }
         
         #       read is mapped                                  mate is mapped                           not paired correctly                  ins size < 50k               both mates are mapped to same strand
@@ -250,7 +259,13 @@ sub testBreakPoint
         }
     }
     unlink( qq[/tmp/$$.region.bam] );
-    
+=pod    
+    foreach my $r(@lhsFwd){print qq[$r\t];}print qq[\n];
+    foreach my $r(@lhsRev){print qq[$r\t];}print qq[\n];
+    foreach my $r(@rhsFwd){print qq[$r\t];}print qq[\n];
+    foreach my $r(@rhsRev){print qq[$r\t];}print qq[\n];
+=cut
+
     #if it appears to be an inversion breakpoint
     my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]];
     print qq[No same orientation: $numSameOrientation\n];
@@ -271,10 +286,10 @@ sub testBreakPoint
         #want to be more descriptive with filter values to return e.g. total reads too low, one-side ok only, sides OK but distance too large
         #my $lhsRatioPass = ( $lhsRevBlue == 0 ) || ( $lhsRevBlue > 0 && $lhsFwdBlue / $lhsRevBlue > 2 );
         #my $rhsRatioPass = ( $rhsFwdBlue == 0 ) || ( $rhsFwdBlue > 0 && $rhsRevBlue / $rhsFwdBlue > 2 );
-        my $lhsRatioPass = ( $lhsRev == 0 ) || ( $lhsRev > 0 && $lhsFwd / $lhsRev > 2 );
-        my $rhsRatioPass = ( $rhsFwd == 0 ) || ( $rhsFwd > 0 && $rhsRev / $rhsFwd > 2 );
-        
-        if( ( $lhsFwd + $rhsRev ) < $minReads )
+        my $lhsRatioPass = ( $lhsRev == 0 ) || ( $lhsRev > 0 && $lhsFwd / $lhsRev >= 2 );
+        my $rhsRatioPass = ( $rhsFwd == 0 ) || ( $rhsFwd > 0 && $rhsRev / $rhsFwd >= 2 );
+#print qq[RR: $lhsFwd\t$lhsRev\t$lhsRatioPass\t$rhsFwd\t$rhsRev\t$rhsRatioPass\n];        
+        if( ( $lhsFwd + $rhsRev + $softClipSupporting ) < $minReads )
         {
             return [$NOT_ENOUGH_READS_CLUSTER, $callString, 0];
         }
@@ -283,12 +298,6 @@ sub testBreakPoint
             print qq[Code: $NOT_ENOUGH_READS_FLANKS\t$lhsFwd\t$rhsRev\n];
             return [$NOT_ENOUGH_READS_FLANKS, $callString, 0];
         }
-=pod
-        elsif( $lhsFwdBlue < $minBlue || $rhsRevBlue < $minBlue )
-        {
-            return [$NOT_ENOUGH_READS_BLUE, $callString, 0];
-        }
-=cut
         elsif( ! $lhsRatioPass && ! $rhsRatioPass )
         {
             return [$NEITHER_SIDE_RATIO_PASSES, $callString, 0];
@@ -479,7 +488,7 @@ sub getCandidateBreakPointsDirVote
         
         next if $samL[ 4 ] < $minQ;
         next if ( $flag & $$BAMFLAGS{'duplicate'} );
-
+        
         #update the counts to the current position
         my $gap = 0; #apply a gap-open penalty to the score to avoid odd spurious read throwing off counts
         for(my $i=$fwdCurrentPos;$i<$samL[3];$i++ )
@@ -528,7 +537,7 @@ sub getCandidateBreakPointsDirVote
         last if( ! defined( $fwdCount{$i} ) || ! defined( $revCount{$i} ) );
         my $sum = $fwdCount{$i}+$revCount{$i};
         #print qq[$i\t$sum\n];
-        if( $fwdCount{$i}+$revCount{$i} >= $maxVal )
+        if( $fwdCount{$i}+$revCount{$i} > $maxVal )
         {
             $maxPos = $i;
             @maxPoss = ();
@@ -1289,10 +1298,11 @@ sub calculateCigarBreakpoint
 =pod
 return 1 - unmapped mate
 return 2 - mate mapped but incorrectly
+return 3 - soft clipped read supporting the breakpoint
 =cut
 sub isSupportingClusterRead
 {
-    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 6;
+    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 8;
     
     my $flag = shift;
     my $insert = shift;
@@ -1300,6 +1310,8 @@ sub isSupportingClusterRead
     my $minQual = shift;
     my $minSoftClip = shift;
     my $cigar = shift;
+    my $refpos = shift; #if the breakpiont position + read start is provided, then check if the reads soft clip OVER the breakpoint
+    my $readpos = shift;
     
     #            read is not a duplicate        map quality is >= minimum
     if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $mapQ >= $minQual )
@@ -1310,11 +1322,22 @@ sub isSupportingClusterRead
             return 1;
         }
         #                               read mapped                             mate mapped                            ins size sensible          has single soft clip in cigar bigger than minimum clip size
-        elsif( ( defined( $minSoftClip ) && $minSoftClip > 0 && ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ( $flag & $$BAMFLAGS{'read_paired'} ) && abs( $insert ) < 3000 && ($cigar=~tr/S/S/) == 1 && $cigar =~ /(\d+)(S)/ && $1 > $minSoftClip )
-            ||
-            #            read is mapped                         mate is mapped                                  not paired correctly                has large enough deviation from expected ins size (short libs assumed)
-            ( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag & $$BAMFLAGS{'read_paired'} ) && ( abs( $insert ) > 30000 || $insert == 0 ) )
-        )
+        elsif( defined( $minSoftClip ) && $minSoftClip > 0 && ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ( $flag & $$BAMFLAGS{'read_paired'} ) && abs( $insert ) < 3000 && ($cigar=~tr/S/S/) == 1 && $cigar =~ /(\d+)(S)/ && $1 > $minSoftClip )
+        {
+            #if breakpoint information is provided - check the soft clip is consistent with the breakpoint
+            if( defined( $refpos ) && defined( $readpos ) )
+            {
+                #                               forward aligned and 3' of break         cigar ends with match
+                if( ( !( $flag & $$BAMFLAGS{'reverse_strand'} ) && $readpos > $refpos && $cigar =~ /M$/ ) || (( $flag & $$BAMFLAGS{'reverse_strand'} ) && $readpos < $refpos && $cigar =~ /S$/ ) )
+                {
+                    return 3;
+                }
+                else{return 0;}
+            }
+            return 3;
+        }
+        #            read is mapped                         mate is mapped                                  not paired correctly                has large enough deviation from expected ins size (short libs assumed)
+        elsif( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $flag & $$BAMFLAGS{'read_paired'} ) && ( abs( $insert ) > 30000 || $insert == 0 ) )
         {
             return 2;
         }

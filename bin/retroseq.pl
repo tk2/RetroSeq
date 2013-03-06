@@ -1359,7 +1359,7 @@ sub _getCandidateTEReadNames
             }
         }
         
-        my $supporting = RetroSeq::Utilities::isSupportingClusterRead( $flag, $sam[ 8 ], $qual, $minAnchor, $minSoftClip, $cigar );
+        my $supporting = RetroSeq::Utilities::isSupportingClusterRead( $flag, $sam[ 8 ], $qual, $minAnchor, $minSoftClip, $cigar, undef, undef );
         
         if( $supporting > 0 )
         {
