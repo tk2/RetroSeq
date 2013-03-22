@@ -53,7 +53,7 @@ our $PASS = 8;
 our $FILTER_NAMES = ['Fail', 'HomBreakDepth', 'MinReads', 'MinReadsFlanks', 'MinReadsBlue', 'BothRatioFail', 'OneRatioFail', 'DistanceThreshold' ];
 our $FILTER_DESC = ['Unknown fail', 'HomBreakDepth', 'Not enough supporting reads', 'Not enough supporting reads on either flanking sides', 'Not enough supporting multi-mapped reads', 'Neither side has required ratio of fwd:rev reads', 'One side has required ratio of fwd:rev reads', 'Distance between 3\' and 5\' reads is greater than threshold' ];
 
-our $VERSION = 1.34;
+our $VERSION = 1.4;
 
 sub filterOutRegions
 {
@@ -192,7 +192,7 @@ sub testBreakPoint
     my $softClipSupporting = 0;
 	
     #store the last blue read before the b/point, and first blue read after the b/point
-	my $lastBluePos = 0;my $firstBluePos = 100000000000;
+	my $lastSupportingPos = 0;my $firstSupportingPos = 100000000000;
 	
 	my $cmdpre;
     if( @bams > 1 )
@@ -220,17 +220,17 @@ sub testBreakPoint
 	    chomp( $sam );
 	    my @s = split( /\t/, $sam );
 	    
-	    my $supporting = isSupportingClusterRead( $s[ 1 ], $s[ 8 ], $s[ 4 ], $minMapQ, $minSoftClip, $s[ 5 ], $refPos, $s[ 3 ] );
+	    my $supporting = isSupportingClusterRead( $s[ 1 ], $s[ 8 ], $s[ 4 ], $minMapQ, $minSoftClip, $s[ 5 ], $refPos, $s[ 3 ], length( $s[9] ) );
 	    if( $supporting  == 2 )
 	    {
             if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
             {
                 #need to check
-                if( $s[ 3 ] < $refPos ){$lhsRevBlue++;push(@lhsRev, $s[0]);}else{$rhsRevBlue++;$firstBluePos = $s[ 3 ] if( $s[ 3 ] < $firstBluePos );push(@rhsRev, $s[0]);}
+                if( $s[ 3 ] < $refPos ){$lhsRevBlue++;push(@lhsRev, $s[0]);}else{$rhsRevBlue++;$firstSupportingPos = $s[ 3 ] if( $s[ 3 ] < $firstSupportingPos );push(@rhsRev, $s[0]);}
             }
             else
             {
-                if( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastBluePos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastBluePos );push(@lhsFwd, $s[0]);}else{$rhsFwdBlue++;push(@rhsFwd, $s[0]);}
+                if( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastSupportingPos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastSupportingPos );push(@lhsFwd, $s[0]);}else{$rhsFwdBlue++;push(@rhsFwd, $s[0]);}
             }
         }
         #        the mate is unmapped
@@ -238,11 +238,11 @@ sub testBreakPoint
         {
             if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
             {
-                if( $s[ 3 ] < $refPos ){$lhsRevGreen++;push(@lhsRev, $s[0]);}else{$rhsRevGreen++;push(@rhsRev, $s[0]);}
+                if( $s[ 3 ] < $refPos ){$lhsRevGreen++;push(@lhsRev, $s[0]);}else{$rhsRevGreen++;$firstSupportingPos = $s[ 3 ] if( $s[ 3 ] < $firstSupportingPos );push(@rhsRev, $s[0]);}
             }
             else
             {
-                if( $s[ 3 ] < $refPos ){$lhsFwdGreen++;push(@lhsFwd, $s[0]);}else{$rhsFwdGreen++;push(@rhsFwd, $s[0]);}
+                if( $s[ 3 ] < $refPos ){$lhsFwdGreen++;$lastSupportingPos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastSupportingPos );push(@lhsFwd, $s[0]);}else{$rhsFwdGreen++;push(@rhsFwd, $s[0]);}
             }
         }
         #soft clipped read supporting the breakpoint
@@ -253,7 +253,7 @@ sub testBreakPoint
         }
         
         #       read is mapped                                  mate is mapped                           not paired correctly                  ins size < 50k               both mates are mapped to same strand
-        if( ! ($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && $s[ 8 ] < 50000 && ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) == ( $s[ 1 ] & $$BAMFLAGS{'mate_reverse'} ) )
+        if( ! ($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && abs($s[ 8 ]) < 50000 && ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) == ( $s[ 1 ] & $$BAMFLAGS{'mate_reverse'} ) && ( $s[ 2 ] eq $s[ 6 ] || $s[ 6 ] eq '=') ) #and both mates mapped to the same chr
         {
             $numSameOrientation ++;
         }
@@ -267,19 +267,20 @@ sub testBreakPoint
 =cut
 
     #if it appears to be an inversion breakpoint
-    my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]];
+    my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
+    my $totalSupporting = ( $lhsFwd + $rhsRev + $softClipSupporting );
+    my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$totalSupporting];
     print qq[No same orientation: $numSameOrientation\n];
-    if( $numSameOrientation > $originalCallA[ 4 ] )
+    if( $numSameOrientation > $totalSupporting )
     {
         return [$INV_BREAKPOINT, $callString, 10000 ];
     }
     
     #check there are supporting read pairs either side of the depth minima
-    my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
-    my $dist = $firstBluePos - $lastBluePos;
+    my $dist = $firstSupportingPos - $lastSupportingPos;
     my $minBlue = int($minReads / 2);
     
-    print $dfh qq[TEST: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
+    print $dfh qq[TEST: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastSupportingPos\t$firstSupportingPos\t$dist\n];
     
     if( ! $genotypeMode ) #calling mode
     {
@@ -288,8 +289,9 @@ sub testBreakPoint
         #my $rhsRatioPass = ( $rhsFwdBlue == 0 ) || ( $rhsFwdBlue > 0 && $rhsRevBlue / $rhsFwdBlue > 2 );
         my $lhsRatioPass = ( $lhsRev == 0 ) || ( $lhsRev > 0 && $lhsFwd / $lhsRev >= 2 );
         my $rhsRatioPass = ( $rhsFwd == 0 ) || ( $rhsFwd > 0 && $rhsRev / $rhsFwd >= 2 );
-#print qq[RR: $lhsFwd\t$lhsRev\t$lhsRatioPass\t$rhsFwd\t$rhsRev\t$rhsRatioPass\n];        
-        if( ( $lhsFwd + $rhsRev + $softClipSupporting ) < $minReads )
+#print qq[RR: $lhsFwd\t$lhsRev\t$lhsRatioPass\t$rhsFwd\t$rhsRev\t$rhsRatioPass\n]; 
+        
+        if( $totalSupporting < $minReads )
         {
             return [$NOT_ENOUGH_READS_CLUSTER, $callString, 0];
         }
@@ -306,36 +308,18 @@ sub testBreakPoint
         {
             return [$ONE_SIDED_RATIO_PASSES, $callString, 0];
         }
-        elsif( $dist > 120 )
+        elsif( $dist > 220 )
         {
-            return [$DISTANCE_THRESHOLD, $callString, 0];
+            print qq[Distance between 5' and 3' clusters: $dist\n];
+            return [$DISTANCE_THRESHOLD, $callString, 0 ];
         }
         else
         {
             my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev );
-            return [$PASS, $callString, $ratio];
+            return [$PASS, $callString, $ratio, $totalSupporting];
         }
         
-        return [$UNKNOWN_FAIL, $callString, 10000 ];
-    }
-    else #genotyping mode - less stringent num of reads required
-    {
-        if( ( $lhsFwdBlue >= $minBlue && $lhsFwd >= $minReads && ( $lhsRevBlue == 0 || $lhsFwdBlue / $lhsRevBlue > 2 ) )#&& $dist < 120 )
-            ||
-            ( $rhsRevBlue >= $minBlue && $rhsRev >= $minReads && ( $rhsFwdBlue == 0 || $rhsRevBlue / $rhsFwdBlue > 2 ) )#&& $dist < 120 )
-          )
-        {
-            my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev ); #objective function is to minimise this value (i.e. min depth, meets the criteria, and balances the 3' vs. 5' ratio best)
-            my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$originalCallA[ 4 ]\n];
-            print $dfh qq[PASS: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
-            
-            return [$lhsFwd+$rhsRev]; #return number of reads supporting call
-        }
-        else
-        {
-            print $dfh qq[FILTER: $originalCallA[ 0 ]\t$refPos\t$refPos\t$originalCallA[3]_filter\t$lhsFwdBlue\t$lhsRevBlue\t$lhsFwdGreen\t$lhsRevGreen\t$rhsFwdBlue\t$rhsRevBlue\t$rhsFwdGreen\t$rhsRevGreen\t$lastBluePos\t$firstBluePos\t$dist\n];
-            return undef;
-        }
+        return [$UNKNOWN_FAIL, $callString, 10000];
     }
 }
 
@@ -1302,7 +1286,7 @@ return 3 - soft clipped read supporting the breakpoint
 =cut
 sub isSupportingClusterRead
 {
-    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 8;
+    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 9;
     
     my $flag = shift;
     my $insert = shift;
@@ -1312,6 +1296,7 @@ sub isSupportingClusterRead
     my $cigar = shift;
     my $refpos = shift; #if the breakpiont position + read start is provided, then check if the reads soft clip OVER the breakpoint
     my $readpos = shift;
+    my $readlength = shift;
     
     #            read is not a duplicate        map quality is >= minimum
     if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $mapQ >= $minQual )
@@ -1328,7 +1313,7 @@ sub isSupportingClusterRead
             if( defined( $refpos ) && defined( $readpos ) )
             {
                 #                               forward aligned and 3' of break         cigar ends with match
-                if( ( !( $flag & $$BAMFLAGS{'reverse_strand'} ) && $readpos > $refpos && $cigar =~ /M$/ ) || (( $flag & $$BAMFLAGS{'reverse_strand'} ) && $readpos < $refpos && $cigar =~ /S$/ ) )
+                if( ( !( $flag & $$BAMFLAGS{'reverse_strand'} ) && $readpos > $refpos && $cigar =~ /M$/ && abs($refpos-$readpos)<$readlength ) || (( $flag & $$BAMFLAGS{'reverse_strand'} ) && $readpos < $refpos && $cigar =~ /S$/ && abs($refpos-$readpos)<$readlength ) )
                 {
                     return 3;
                 }
