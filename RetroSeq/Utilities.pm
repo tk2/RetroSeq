@@ -53,7 +53,7 @@ our $PASS = 8;
 our $FILTER_NAMES = ['Fail', 'HomBreakDepth', 'MinReads', 'MinReadsFlanks', 'MinReadsBlue', 'BothRatioFail', 'OneRatioFail', 'DistanceThreshold' ];
 our $FILTER_DESC = ['Unknown fail', 'HomBreakDepth', 'Not enough supporting reads', 'Not enough supporting reads on either flanking sides', 'Not enough supporting multi-mapped reads', 'Neither side has required ratio of fwd:rev reads', 'One side has required ratio of fwd:rev reads', 'Distance between 3\' and 5\' reads is greater than threshold' ];
 
-our $VERSION = 1.4;
+our $VERSION = 1.41;
 
 sub filterOutRegions
 {
