@@ -2,12 +2,12 @@ package RetroSeq::Utilities;
 =pod
 This file is part of RetroSeq.
 
-    Foobar is free software: you can redistribute it and/or modify
+    RetroSeq is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
-    Foobar is distributed in the hope that it will be useful,
+    RetroSeq is distributed in the hope that it will be useful,
     but WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU General Public License for more details.
@@ -1297,6 +1297,8 @@ sub isSupportingClusterRead
     my $refpos = shift; #if the breakpiont position + read start is provided, then check if the reads soft clip OVER the breakpoint
     my $readpos = shift;
     my $readlength = shift;
+    
+    return 0 if( !( $flag & $$BAMFLAGS{'paired_tech'} ) );
     
     #            read is not a duplicate        map quality is >= minimum
     if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $mapQ >= $minQual )
