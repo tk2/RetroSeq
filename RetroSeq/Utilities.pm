@@ -1030,6 +1030,8 @@ sub convertToRegionBedPairsWindowBED
     
 	close( $posfh );close( $negfh );
 	
+	if( -s qq[$$.$id.pos.bed] == 0 || -s qq[$$.$id.neg.bed] == 0 ){print qq[Zero potential TE call regions identified for $id\n];return 0;}
+	
 	my $updownWindow = $max_fwd_rev_gap / 2;
 	system( qq[bedtools window -a $$.$id.pos.bed -b $$.$id.neg.bed -l $updownWindow -r $updownWindow > $$.$id.wb.out] ) == 0 or die qq[bedtools window failed\n];
 	
