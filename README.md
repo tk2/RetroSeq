@@ -71,4 +71,4 @@ If you find RetroSeq useful, please cite our [paper](http://bioinformatics.oxfor
 
 Questions or help
 -----------------
-For questions or support contact Thomas Keane (tk2 --at-- sanger.ac.uk)
+For questions or support contact Thomas Keane (tk2 --at-- sanger.ac.uk) 
