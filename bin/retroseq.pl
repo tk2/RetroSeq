@@ -891,9 +891,6 @@ sub _findInsertions
         }
     }
     
-    #make a VCF file with the calls
-    _outputCalls( \%typeBEDFiles, $sampleName, $ref, $output );
-	
     #output calls in VCF and BED format
     print qq[Creating VCF file of calls....\n];
     _outputCalls( \%typeBEDFiles, $sampleName, $ref, $output );
@@ -1158,6 +1155,7 @@ sub _filterCallsBedMinima
         my $flag = $result->[0];
         my $call = $result->[1];
         my $ratio = $result->[2];
+        my $spanningRPs = $result->[4];
         
         if( $flag == $RetroSeq::Utilities::INV_BREAKPOINT )
         {
@@ -1169,12 +1167,12 @@ sub _filterCallsBedMinima
             if( $depth <= 10 )
             {
                 print qq[Hom breakpoint score: $ratio Flag: $flag\n];
-                print $homsfh $call.qq[\t$flag\n];
+                print $homsfh $call.qq[\t$flag\t$spanningRPs\n];
             }
             else
             {
                 print qq[Het breakpoint score: $ratio Flag: $flag\n];
-                print $hetsfh $call.qq[\t$flag\n];
+                print $hetsfh $call.qq[\t$flag\t$spanningRPs\n];
             }
         }
         else{print qq[Discarding: $call : $flag\n];}
@@ -1500,9 +1498,9 @@ sub _outputCalls
                 my $ci1 = $s[ 1 ] - $pos;
                 my $ci2 = $s[ 2 ] - $pos;
                 my $flag = $s[ 5 ];
-                my $dir = defined( $s[ 6 ] ) && length( $s[ 6 ] ) > 0 ? $s[ 6 ] : 'NA';
+                my $spanning = $s[ 6 ];
                 
-                print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\t$s[4]\t$dir\n];
+                print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\t$s[4]\tNA\n];
                 
                 my %out;
                 $out{CHROM}  = $s[ 0 ];
@@ -1511,12 +1509,13 @@ sub _outputCalls
                 $out{ALT}    = ['<INS:ME>'];
                 $out{REF}    = $refbase;
                 $out{QUAL}   = $s[ 4 ];
-                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],$dir] };
-                $out{FORMAT} = ['GT', 'GQ', 'FL'];
+                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                $out{FORMAT} = ['GT', 'GQ', 'FL', 'SP'];
                 
                 $out{gtypes}{$sample}{GT} = qq[<INS:ME>/<INS:ME>];
                 $out{gtypes}{$sample}{GQ} = qq[$s[4]];
                 $out{gtypes}{$sample}{FL} = $flag;
+                $out{gtypes}{$sample}{SP} = $spanning;
                 
                 $vcf_out->format_genotype_strings(\%out);
                 print $vfh $vcf_out->format_line(\%out);
@@ -1539,9 +1538,9 @@ sub _outputCalls
                 my $ci1 = $s[ 1 ] - $pos;
                 my $ci2 = $s[ 2 ] - $pos;
                 my $flag = $s[ 5 ];
-                my $dir = defined( $s[ 6 ] ) && length( $s[ 6 ] ) > 0 ? $s[ 6 ] : 'NA';
+                my $spanning = $s[ 6 ];
                 
-                print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\t$s[4]\t$dir\n];
+                print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\t$s[4]\tNA\n];
                 
                 my %out;
                 $out{CHROM}  = $s[ 0 ];
@@ -1550,12 +1549,13 @@ sub _outputCalls
                 $out{ALT}    = [$refbase,'<INS:ME>'];
                 $out{REF}    = $refbase;
                 $out{QUAL}   = $s[ 4 ];
-                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],$dir] };
-                $out{FORMAT} = ['GT','GQ', 'FL'];
+                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                $out{FORMAT} = ['GT','GQ', 'FL', 'SP'];
                 
                 $out{gtypes}{$sample}{GT} = qq[$refbase/<INS:ME>];
                 $out{gtypes}{$sample}{GQ} = qq[$s[4]];
                 $out{gtypes}{$sample}{FL} = $flag;
+                $out{gtypes}{$sample}{SP} = $spanning;
                 
                 $vcf_out->format_genotype_strings(\%out);
                 print $vfh $vcf_out->format_line(\%out);

@@ -215,6 +215,7 @@ sub testBreakPoint
 	open( my $tfh, $cmd ) or die $!;
 	my $totalLFwd = 0; my $totalRRev = 0;my $totalSup = 0;
 	my @lhsFwd;my @lhsRev;my @rhsFwd;my @rhsRev;my @soft;
+	my $totalSpanningRPs = 0;
 	while( my $sam = <$tfh> )
 	{
 	    chomp( $sam );
@@ -257,6 +258,13 @@ sub testBreakPoint
         {
             $numSameOrientation ++;
         }
+        
+        #see if the read pair spans the breakpoint for (only necessary to count for 5' reads)
+        #       5' of breakpoint                read is mapped                  mate mapped                                 paired correctly                        mapped to same chr                  mate mapped on 3' side of breakpoint
+        if( $s[ 3 ] < $refPos && !($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} ) && ( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && ($s[6] eq '=' || $s[6] eq $s[2]) && $s[7] > $refPos )
+        {
+            $totalSpanningRPs ++;
+        }
     }
     unlink( qq[/tmp/$$.region.bam] );
 =pod    
@@ -293,33 +301,33 @@ sub testBreakPoint
         
         if( $totalSupporting < $minReads )
         {
-            return [$NOT_ENOUGH_READS_CLUSTER, $callString, 0];
+            return [$NOT_ENOUGH_READS_CLUSTER, $callString, 0, $totalSupporting, $totalSpanningRPs];
         }
         elsif( $lhsFwd < ($minReads/2) || $rhsRev < ($minReads/2) )
         {
             print qq[Code: $NOT_ENOUGH_READS_FLANKS\t$lhsFwd\t$rhsRev\n];
-            return [$NOT_ENOUGH_READS_FLANKS, $callString, 0];
+            return [$NOT_ENOUGH_READS_FLANKS, $callString, 0, $totalSupporting, $totalSpanningRPs];
         }
         elsif( ! $lhsRatioPass && ! $rhsRatioPass )
         {
-            return [$NEITHER_SIDE_RATIO_PASSES, $callString, 0];
+            return [$NEITHER_SIDE_RATIO_PASSES, $callString, 0, $totalSupporting, $totalSpanningRPs];
         }
         elsif( ! ( $lhsRatioPass && $rhsRatioPass ) )
         {
-            return [$ONE_SIDED_RATIO_PASSES, $callString, 0];
+            return [$ONE_SIDED_RATIO_PASSES, $callString, 0, $totalSupporting, $totalSpanningRPs];
         }
         elsif( $dist > 220 )
         {
             print qq[Distance between 5' and 3' clusters: $dist\n];
-            return [$DISTANCE_THRESHOLD, $callString, 0 ];
+            return [$DISTANCE_THRESHOLD, $callString, 0, $totalSupporting, $totalSpanningRPs ];
         }
         else
         {
             my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev );
-            return [$PASS, $callString, $ratio, $totalSupporting];
+            return [$PASS, $callString, $ratio, $totalSupporting, $totalSpanningRPs];
         }
         
-        return [$UNKNOWN_FAIL, $callString, 10000];
+        return [$UNKNOWN_FAIL, $callString, 10000, $totalSpanningRPs];
     }
 }
 
@@ -1252,6 +1260,9 @@ sub getVcfHeader
     ##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype quality">
     $vcf_out->add_header_line( {key=>'FORMAT', ID=>'GQ', Number=>'1', Type=>'Float', Description=>'Genotype quality'} );
 
+    ##FORMAT=<ID=SP,Number=1,Type=Float,Description="Number of read pairs spanning breakpoint, useful for estimation of size of insertion">
+    $vcf_out->add_header_line( {key=>'FORMAT', ID=>'SP', Number=>'1', Type=>'Float', Description=>'Number of correctly mapped read pairs spanning breakpoint, useful for estimation of size of insertion'} );
+    
     ##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype quality">
     $vcf_out->add_header_line( {key=>'FORMAT', ID=>'FL', Number=>'1', Type=>'Integer', Description=>'Call Status - for reference calls a flag to say if the call failed a particular filter. Filters are ordered by priority in calling (higher number indicates closer to being called). 1 - depth too high in region, 2 - not enough reads in cluster, 3 - not enough total flanking reads, 4 - not enough inconsistently mapped reads, 5 - neither side passes ratio test, 6 - one side passes ratio test, 7 - distance too large at breakpoint, 8 - PASSED all filters'} );
     
