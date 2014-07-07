@@ -765,6 +765,8 @@ sub _findInsertions
         if( $currentType eq '' )
         {
             $currentType = $s[ 3 ];
+            die qq[Failed to detect the TE type to be called from line: $line\n] unless $currentType;
+            
             print qq[PE Call: $currentType\n];
             $currentTypeAnchorsFile = qq[$$.$currentType.pe_anchors.bed];
             open( $cfh, qq[>$currentTypeAnchorsFile] ) or die $!;
