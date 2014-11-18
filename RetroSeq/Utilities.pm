@@ -1023,9 +1023,9 @@ sub convertToRegionBedPairsWindowBED
 	{
 	    if( $reads_with_idFwd >= ( $minReads * 0.5 ) )
 	    {
-	        print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t+\t$reads_in_regionFwd\n]
+	        print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\t$id\t+\t$reads_in_regionFwd\n];
 	    }
-	    else{print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\tunknown\t+\t$reads_in_regionFwd\n]}
+	    else{print $posfh qq[$regionChrFwd\t$regionStartFwd\t$regionEndFwd\tunknown\t+\t$reads_in_regionFwd\n];}
 	}
 	if( $reads_in_regionRev >= $minReads )
 	{
