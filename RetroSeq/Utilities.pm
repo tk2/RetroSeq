@@ -215,7 +215,7 @@ sub testBreakPoint
 	open( my $tfh, $cmd ) or die $!;
 	my $totalLFwd = 0; my $totalRRev = 0;my $totalSup = 0;
 	my @lhsFwd;my @lhsRev;my @rhsFwd;my @rhsRev;my @soft;
-	my $totalSpanningRPs = 0;
+	my $totalSpanningRPs = 0;my %spanningFrags;
 	while( my $sam = <$tfh> )
 	{
 	    chomp( $sam );
@@ -261,12 +261,32 @@ sub testBreakPoint
         
         #see if the read pair spans the breakpoint for (only necessary to count for 5' reads)
         #       5' of breakpoint                read is mapped                  mate mapped                                 paired correctly                        mapped to same chr                  mate mapped on 3' side of breakpoint
-        if( $s[ 3 ] < $refPos && !($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} ) && ( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && ($s[6] eq '=' || $s[6] eq $s[2]) && $s[7] > $refPos )
+#        if( $s[ 3 ] < ($refPos-length($s[9])) && !($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} ) && ( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && ($s[6] eq '=' || $s[6] eq $s[2]) && $s[7] > ($refPos+length($s[9])) )
+#        {
+#            $avgInsSpanning=(($avgInsSpanning*$totalSpanningRPs)+$s[8])/($totalSpanningRPs+1);
+#			$totalSpanningRPs ++;
+#        }
+        #determine outer co-ordinate of read (ex clipping)
+        if( $s[ 1 ] & $$BAMFLAGS{'paired_tech'} && !($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) )
         {
-            $totalSpanningRPs ++;
+            if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )
+            {
+                my $outer = $s[3];
+                while($s[5]=~/([0-9]+[MIDSH])/g)
+                {
+                    my $entry=$1;
+                    if( $entry=~/M$/){$outer+=substr($entry,0,length($entry)-1);}
+                }
+                $spanningFrags{$s[0]}{threeprime} = $outer if($outer > $refPos+50);
+            }
+            else
+            {
+                $spanningFrags{$s[0]}{fiveprime} = $s[3] if($s[3]<$refPos-50);
+            }
         }
     }
     unlink( qq[/tmp/$$.region.bam] );
+    foreach my $pair(keys(%spanningFrags)){if($spanningFrags{$pair}{threeprime}&&$spanningFrags{$pair}{fiveprime}){$totalSpanningRPs++; print qq[SPAN: $pair\n];};}print qq[\n];
 =pod    
     foreach my $r(@lhsFwd){print qq[$r\t];}print qq[\n];
     foreach my $r(@lhsRev){print qq[$r\t];}print qq[\n];
@@ -502,7 +522,12 @@ sub getCandidateBreakPointsDirVote
         if( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && !( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #fwd supporting read
         {
             no warnings 'uninitialized'; #perl warns when the value is 0
-            my $endPos = $samL[ 3 ] + length( $samL[ 9 ] );
+            my $endPos = $samL[ 3 ];
+			while($samL[5]=~/([0-9]+[MIDSH])/g)
+            {
+                my $entry=$1;
+                if( $entry=~/M$/){$endPos+=substr($entry,0,length($entry)-1);}
+            }
             if( $endCounts{ $endPos } ){$endCounts{$endPos}++;}else{$endCounts{$endPos} = 1;};
         }
         #       paired technology                       not paired correctly                    is on rev strand
@@ -1038,10 +1063,25 @@ sub convertToRegionBedPairsWindowBED
     
 	close( $posfh );close( $negfh );
 	
-	if( -s qq[$$.$id.pos.bed] == 0 || -s qq[$$.$id.neg.bed] == 0 ){print qq[Zero potential TE call regions identified for $id\n];return 0;}
+	if( -s qq[$$.$id.pos.bed] == 0 || -s qq[$$.$id.neg.bed] == 0 )
+	{
+	    if( -s qq[$$.$id.pos.bed] == 0 && -s qq[$$.$id.neg.bed] > 0 )
+	    {
+	        system( qq[cat $$.$id.neg.bed >> $$.hybrid.neg.out] ) == 0 or die qq[cat neg failed\n];
+	    }
+	    elsif( -s qq[$$.$id.pos.bed] > 0 && -s qq[$$.$id.neg.bed] == 0 )
+	    {
+	        system( qq[cat $$.$id.pos.bed >> $$.hybrid.pos.out] ) == 0 or die qq[cat pos failed\n];
+	    }
+	    print qq[Zero potential TE call regions identified for $id\n];return 0;
+	}
 	
 	my $updownWindow = $max_fwd_rev_gap / 2;
 	system( qq[bedtools window -a $$.$id.pos.bed -b $$.$id.neg.bed -l $updownWindow -r $updownWindow > $$.$id.wb.out] ) == 0 or die qq[bedtools window failed\n];
+	
+	#collect the unused pos/neg clusters into separate file
+	system( qq[bedtools window -a $$.$id.pos.bed -b $$.$id.neg.bed -v -l $updownWindow -r $updownWindow | awk -F"\t" '\$6>$minReads' >> $$.hybrid.pos.out] ) == 0 or die qq[bedtools window failed\n];
+	system( qq[bedtools window -a $$.$id.neg.bed -b $$.$id.pos.bed -v -l $updownWindow -r $updownWindow | awk -F"\t" '\$6>$minReads' >> $$.hybrid.neg.out] ) == 0 or die qq[bedtools window failed\n];
 	
 	#now pair up the clusters by closest end/start positions - use windowBED to cluster
 	open( my $ofh, qq[>$outputbed] ) or die $!;

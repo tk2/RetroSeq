@@ -397,7 +397,13 @@ sub _findCandidates
                         my $qual = $s[ 4 ];
                         my $readLen = length( $s[ 9 ] );
                         my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
-                        print $dfh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\t$qual\n];
+                        my $endPos=$pos;
+                        while($s[5]=~/([0-9]+[MIDSH])/g)
+                        {
+                            my $entry=$1;
+                            if( $entry=~/M$/){$endPos+=substr($entry,0,length($entry)-1);}
+                        }
+                        print $dfh qq[$ref\t$pos\t$endPos\t$name\t$dir\t$qual\n];
                         $readsFound ++;
                     }
                     delete( $candidates{ $name } );
@@ -856,6 +862,68 @@ sub _findInsertions
     }
     close( $tfh );
     close( $cfh ) if( $cfh );
+    
+    #identify hybrid insertions from unused clusters (in $$.hybrid.[pos|neg].out files)
+    if( -s qq[$$.hybrid.pos.out] && -s qq[$$.hybrid.neg.out] )
+    {
+        
+        print qq[PE Call: Hybrid elements\n];
+        my $rawTECalls1 = qq[$$.raw_calls.1.hybrid.tab];
+        open(my $ofh, qq[>$rawTECalls1] ) or die $!;
+        my $window = $DEFAULT_MAX_CLUSTER_DIST/2;
+        open(my $bfh, qq[bedtools window -a $$.hybrid.pos.out -b $$.hybrid.neg.out -l $window -r $window | ] ) or die qq[bedtools failed for hybrids];
+        my $numRegions = 0;
+        while( my $line=<$bfh> )
+        {
+            chomp($line);
+            my @s = split( /\t/, $line );
+            
+            #do some sanity checks??
+            my $totalReads = $s[ 5 ] + $s[ 11 ];
+            my $end = $s[2]>$s[8]?$s[2]:$s[8];
+            my $start = $s[1]<$s[7]?$s[1]:$s[7];
+            
+            print $ofh qq[$s[0]\t$start\t$end\t$s[3]-$s[9]-hybrid\t$totalReads\t].$RetroSeq::Utilities::PASS.qq[\n];$numRegions ++;
+        }
+        
+        close($bfh);close($ofh);
+        
+        if( $numRegions > 0 )
+        {
+            #remove extreme depth calls
+            print qq[Removing calls with extremely high depth (>$depth)....\n];
+            my $rawTECalls2 = qq[$$.raw_calls.2.hybrid.tab];
+            _removeExtremeDepthCalls( $rawTECalls1, \@bams, $depth, $rawTECalls2, $raw_candidates );
+            
+            #new calling filtering code
+            print qq[Filtering and refining candidate regions into calls....\n];
+            my $homCalls = qq[$$.raw_calls.3.hybrid.hom.bed];
+            my $hetCalls = qq[$$.raw_calls.3.hybrid.het.bed];
+          
+            _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
+          
+            #remove close duplicated calls
+            my $rmdupHomCalls = qq[$$.raw_calls.3.hybrid.hom.rmdup.bed];
+            RetroSeq::Utilities::_removeDups( $homCalls, $rmdupHomCalls );
+            $typeBEDFiles{ hybrid }{hom} = $rmdupHomCalls if( -f $rmdupHomCalls && -s $rmdupHomCalls > 0 );
+         
+            my $rmdupHetCalls;
+            if( -s $hetCalls > 0 )
+            {
+                $rmdupHetCalls = qq[$$.raw_calls.3.hybrid.het.rmdup.bed];
+                RetroSeq::Utilities::_removeDups( $hetCalls, $rmdupHetCalls );
+                $typeBEDFiles{ hybrid }{het} = $rmdupHetCalls;
+            }
+            
+            #remove the temporary files for this 
+            if( $clean )
+            {
+                unlink( qq[$$.raw_reads.0.hybrid.tab], qq[$$.raw_calls.1.hybrid.tab], qq[$$.raw_calls.2.hybrid.tab] ) or die qq[Failed to delete temp files\n];
+                unlink( $homCalls ) if( -f $homCalls && -s $homCalls == 0 );
+                unlink( $hetCalls ) if ( -f $hetCalls && -s $hetCalls == 0 );
+            }
+        }
+    }
     
     if( $novel )
     {
@@ -1511,7 +1579,7 @@ sub _outputCalls
                 $out{ALT}    = ['<INS:ME>'];
                 $out{REF}    = $refbase;
                 $out{QUAL}   = $s[ 4 ];
-                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$s[3],$s[1],$s[2],NA] };
                 $out{FORMAT} = ['GT', 'GQ', 'FL', 'SP'];
                 
                 $out{gtypes}{$sample}{GT} = qq[<INS:ME>/<INS:ME>];
@@ -1551,7 +1619,7 @@ sub _outputCalls
                 $out{ALT}    = [$refbase,'<INS:ME>'];
                 $out{REF}    = $refbase;
                 $out{QUAL}   = $s[ 4 ];
-                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$type,$s[1],$s[2],NA] };
+                $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$s[3],$s[1],$s[2],NA] };
                 $out{FORMAT} = ['GT','GQ', 'FL', 'SP'];
                 
                 $out{gtypes}{$sample}{GT} = qq[$refbase/<INS:ME>];
