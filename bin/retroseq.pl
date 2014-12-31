@@ -32,13 +32,9 @@ my $DEFAULT_LENGTH = 36;
 my $DEFAULT_ANCHORQ = 20;
 my $DEFAULT_MAX_DEPTH = 200;
 my $DEFAULT_READS = 10;
-my $DEFAULT_MIN_GENOTYPE_READS = 3;
 my $MAX_READ_GAP_IN_REGION = 120;
 my $DEFAULT_MIN_CLUSTER_READS = 2;
-my $DEFAULT_SR_MIN_CLUSTER_READS = 3;
-my $DEFAULT_SR_MIN_UNKNOWN_CLUSTER_READS = 10;
 my $DEFAULT_MAX_CLUSTER_DIST = 4000;
-my $DEFAULT_MAX_SR_CLUSTER_DIST = 30;
 my $DEFAULT_MIN_SOFT_CLIP = 30;
 
 my $HEADER = qq[#retroseq v:].$RetroSeq::Utilities::VERSION;
@@ -59,14 +55,13 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $genotype, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $heterozygous, $orientate, $ignoreRGsFofn, $srmode, $minSoftClip, $srOutputFile, $srInputFile, $callNovel, $refTEs, $excludeRegionsDis, $doAlign, $singleEnds, $help);
+my ($discover, $call, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $orientate, $ignoreRGsFofn, $callNovel, $refTEs, $excludeRegionsDis, $doAlign, $help);
 
 GetOptions
 (
     #actions
     'discover'      =>  \$discover,
     'call'          =>  \$call,
-    'genotype'      =>  \$genotype,
     
     #parameters
     'bam=s'         =>  \$bam,
@@ -84,19 +79,13 @@ GetOptions
     'region=s'      =>  \$region,
     'tmp=s'         =>  \$tmpdir,
     'rgs=s'         =>  \$readgroups,
-    'hets'          =>  \$heterozygous,
     'filter=s'      =>  \$filterFile,
     'orientate=s'   =>  \$orientate,
     'ignoreRGs=s'   =>  \$ignoreRGsFofn,
-    'srmode'        =>  \$srmode,
-    'minclip=i'     =>  \$minSoftClip,
-    'srcands=s'     =>  \$srOutputFile,
-    'srinput=s'     =>  \$srInputFile,
     'novel'         =>  \$callNovel,
     'refTEs=s'      =>  \$refTEs,
     'exd=s'         =>  \$excludeRegionsDis,
     'align'         =>  \$doAlign,
-    'unmapped'      =>  \$singleEnds,
     'h|help'        =>  \$help,
 );
 
@@ -121,17 +110,16 @@ READ NAMES: This software assumes that reads that make up a pair have identical 
 
 USAGE
 
-( $discover || $call || $genotype || $help) or die $USAGE;
+( $discover || $call || $help) or die $USAGE;
 
 if( $discover )
 {
     ( $bam && $output ) or die <<USAGE;
-Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q <int>] [-id <int>] [-len <int> -noclean]
+Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-id <int>] [-len <int> -noclean]
     
     -bam        BAM file of paired reads mapped to reference genome
     -output     Output file to store candidate supporting reads (required for calling step)
     [-refTEs    Tab file with TE type and BED file of reference elements. These will be used to quickly assign discordant reads the TE types and avoid alignment. Using this will speed up discovery dramatically.]
-    [-minclip   Minimum length of soft clippped portion of read to be considered for split-read analysis. Default is 30bp.]
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
     [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
     [-id        Minimum percent ID for a match of a read to the transposon references. Default is 90.]
@@ -140,8 +128,6 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-srmode] [-q 
     [-align     Do the computational expensive exonerate PE discordant mate alignment step]
     [-eref      Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta). Required when the -align option is used.]
     [-len       Minimum length of a hit to the transposon references when using the -align option. Default is 36bp.]
-    [-unmapped  Include single-end mapped reads in list of candidates e.g. when using the -refTEs option and want to include single-end mapped reads too]
-
     
 USAGE
     
@@ -175,14 +161,7 @@ USAGE
     $id = defined( $id ) && $id < 101 && $id > 0 ? $id : $DEFAULT_ID;
     $length = defined( $length ) && $length > 25 ? $length : $DEFAULT_LENGTH;
     my $clean = defined( $noclean ) ? 0 : 1;
-    
-    if( $srmode )
-    {
-        if( ! $srOutputFile ){die qq[You must specify the -srcands output file parameter in split-read mode\n];}
-        if( ! $minSoftClip ){$minSoftClip = $DEFAULT_MIN_SOFT_CLIP;}
-        print qq[Running split-read discovery mode\n];
-    }else{undef($minSoftClip);}
-    
+        
     if( $readgroups && length( $readgroups ) > 0 )
     {
         my @s = split( /,/, $readgroups );foreach my $rg ( @s ){if( $rg !~ /[A-Za-z0-9]|\.|-|_+/ ){croak qq[Invalid readgroup: $rg\n];}}
@@ -192,22 +171,21 @@ USAGE
     print qq[\nMin anchor quality: $anchorQ\nMin percent identity: $id\nMin length for hit: $length\n\n];
     
     #test for samtools
-    RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16] );
+    RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16], qq[0.1.19] );
     RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] ) if( $doAlign );
     RetroSeq::Utilities::checkBinary( q[bedtools] );
     
-    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $minSoftClip, $srOutputFile, $refTEsF, $excludeRegionsDis, $doAlign, $singleEnds, $clean );
+    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $refTEsF, $excludeRegionsDis, $doAlign, $clean );
 }
 elsif( $call )
 {
     ( $bam && $input && $ref && $output ) or die <<USAGE;
-Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [-srinput <SR candidates file> -filter <BED file> -cleanup -reads <int> -depth <int> -hets]
+Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [ -filter <BED file> -cleanup -reads <int> -depth <int>]
     
     -bam            BAM file OR BAM fofn
     -input          Either a single output file from the PE discover stage OR a prefix of a set of files from discovery to be combined for calling OR a fofn of discovery stage output files
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
-    [-hets          Call heterozygous insertions. Default is homozygous.]
     [-filter        Tab file with TE type and BED file of reference elements. These will be filtered out from the calling.]
     [-region        Call a particular chromosome only (chr) OR region (chr:start-end) only]
     [-depth         Max average depth of a region to be considered for calling. Default is 200.]
@@ -268,58 +246,10 @@ USAGE
     my $sampleName = RetroSeq::Utilities::getBAMSampleName( \@bams );
     print qq[Calling sample $sampleName\n];
     
-    #what sort of calling to run - PE and/or SR
-    if( $srInputFile )
-    {
-        print qq[Beginning split-read calling...\n];
-        _findInsertionsSR( \@bams, $sampleName, $srInputFile, $ref, $output.qq[.SR.vcf], $reads, $depth, $region, $clean, \%filterBEDs, $heterozygous, $ignoreRGsFofn, $callNovel );
-        
-        print qq[Beginning paired-end calling...\n];
-        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE.vcf], $reads, $depth, $anchorQ, $region, $clean, \%filterBEDs, $heterozygous, $orientate, $ignoreRGsFofn, $callNovel );
-        
-        #now merge the VCF files into a single VCF
-        #implement later..
-    }
-    else
-    {
-        print qq[Beginning paired-end calling...\n];
-        _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE.vcf], $reads, $depth, $anchorQ, $region, $clean, \%filterBEDs, $heterozygous, $orientate, $ignoreRGsFofn, $callNovel );
-    }
+
+    print qq[Beginning paired-end calling...\n];
+    _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE.vcf], $reads, $depth, $anchorQ, $region, $clean, \%filterBEDs, 1, $orientate, $ignoreRGsFofn, $callNovel );
 	exit;
-}
-elsif( $genotype )
-{
-    ( $ref && $bams && $input && $output ) or die <<USAGE;
-Usage: $0 -genotype -bams <string> -input <string> -ref <string> -output <string> [-cleanup -reads <int> -region <chr:[start-end]>
-    
-    -bams           File of BAM file names (one per sample to be genotyped)
-    -input          VCF file of TE calls
-    -ref            Fasta of reference genome
-    -output         Output VCF file (will be annotated with new genotype calls)
-    [-hets          Call heterozygous insertions. Default is homozygous.]
-    [-orientate     Attempt to predict the orientation of the calls. Default is no.]
-    [-region        Call a particular chromosome only (chr) OR region (chr:start-end) only]
-    [-depth         Max average depth of a region to be considered for calling. Default is 200.]
-    [-reads         It is the minimum number of reads required to make a call. Default is $DEFAULT_MIN_GENOTYPE_READS. Parameter is optional.]
-    [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
-    [-noclean       Do not remove intermediate output files. Default is to cleanup.]
-USAGE
-    
-    croak qq[Cant find BAM fofn: $bams] unless -f $bams;
-    croak qq[Cant find input: $input] unless -f $input;
-    
-    croak qq[Cant find reference genome fasta: $ref] unless -f $ref;
-    croak qq[Cant find reference genome index - please index your reference file with samtools faidx] unless -f qq[$ref.fai];
-    
-    my $clean = defined( $noclean ) ? 0 : 1;
-    $reads = defined( $reads ) && $reads =~ /^\d+$/ && $reads > -1 ? $reads : $DEFAULT_MIN_GENOTYPE_READS;
-    $anchorQ = defined( $anchorQ ) && $anchorQ > -1 ? $anchorQ : $DEFAULT_ANCHORQ;
-    
-    #test for samtools
-    RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16] );
-    RetroSeq::Utilities::checkBinary( q[bcftools] );
-    
-    _genotype( $bams, $input, $ref, $region, $anchorQ, $output, $clean, $heterozygous, $orientate, $reads );
 }
 else
 {
@@ -338,12 +268,9 @@ sub _findCandidates
     my $minAnchor = shift;
     my $output = shift;
     my $readgroups = shift;
-    my $minSoftClip = shift;
-    my $srOutput = shift;
     my $refTEsF = shift;
     my $excludeRegionsDis = shift;
     my $doAlign = shift;
-    my $singleEnds = shift;
     my $clean = shift;
     
     my $readgroupsFile = qq[$$.readgroups];
@@ -358,9 +285,8 @@ sub _findCandidates
     my $candidatesFasta = $doAlign ? qq[$$.candidates.$fastaCounter.fasta] : undef;
     my $candidatesBed = qq[$$.candidate_anchors.bed];
     my $discordantMatesBed = qq[$$.discordant_mates.bed];
-    my $singleEndsBed = $singleEnds ? qq[$$.single_ends.bed] : undef;
     my $clipFasta = qq[$$.clip_candidates.fasta];
-    my %candidates = %{ _getCandidateTEReadNames($bam, $readgroups, $minAnchor, $minSoftClip, $candidatesFasta, $candidatesBed, $clipFasta, $discordantMatesBed, $singleEndsBed ) };
+    my %candidates = %{ _getCandidateTEReadNames($bam, $readgroups, $minAnchor, $candidatesFasta, $candidatesBed, $discordantMatesBed ) };
     
     print scalar( keys( %candidates ) ).qq[ candidate reads remain to be found after first pass....\n];
     
@@ -395,14 +321,8 @@ sub _findCandidates
                         #record the read position details in the BED file of discordant mates
                         my $pos = $s[ 3 ];
                         my $qual = $s[ 4 ];
-                        my $readLen = length( $s[ 9 ] );
                         my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
-                        my $endPos=$pos;
-                        while($s[5]=~/([0-9]+[MIDSH])/g)
-                        {
-                            my $entry=$1;
-                            if( $entry=~/M$/){$endPos+=substr($entry,0,length($entry)-1);}
-                        }
+                        my $endPos = RetroSeq::Utilities::getSAMendpos($pos,$s[5]);
                         print $dfh qq[$ref\t$pos\t$endPos\t$name\t$dir\t$qual\n];
                         $readsFound ++;
                     }
@@ -516,20 +436,6 @@ sub _findCandidates
                 $candidatesFasta = $newFasta;
             }
         }
-        
-        #now also print the single end mapped reads (if user choose that option)
-        if( $singleEnds )
-        {
-            open( my $tofh, qq[>>$output] ) or die $!;
-            open( my $sefh, qq[$$.single_ends.bed] ) or die qq[Failed to open single ends BED file\n];
-            while( my $line = <$sefh> )
-            {
-                chomp( $line );
-                my @s = split( /\t/, $line );
-                print $tofh qq[$s[0]\t$s[1]\t$s[2]\tunknown\t$s[3]\t$s[4]\t\t90\n];
-            }
-            close( $sefh );close( $tofh );
-        }
     }
     
     if( $doAlign )
@@ -609,42 +515,6 @@ sub _findCandidates
         }
         close( $afh );close( $cfh );
         undef( %anchors );
-        
-        #if running split-read mode, then run exonerate on these sequences too
-        if( $srmode && -s $clipFasta )
-        {
-            open( my $efh, qq[exonerate -m affine:local --bestn 5 --ryo "INFO: %qi %qal %pi %tS %ti\n"].qq[ $clipFasta $refsFasta | egrep "^INFO|completed" | uniq | ] ) or die qq[Exonerate failed to run: $!];
-            print qq[Parsing split-read alignments....\n];
-            open( my $cofh, qq[>$srOutput] ) or die qq[Failed to create clipped candidates output file: $!\n];
-            my $lastLine = '';
-            my %readsAligned;
-            while( my $hit = <$efh> )
-            {
-                chomp( $hit );
-                $lastLine = $hit;
-                last if ( $hit =~ /^-- completed/ );
-                
-                my @s = split( /\s+/, $hit );
-                #    check min identity	  check min length
-                if( $s[ 3 ] >= $id && $s[ 2 ] >= $length )
-                {
-                    #get the readname
-                    my @readDetails = split( /###/, $s[ 1 ] );
-                    
-                    #               chr                pos              pos          TE     readname            flag             cigar        align_strand  insertSize
-                    my $print = qq[$readDetails[1]\t$readDetails[2]\t$readDetails[2]\t$s[5]\t$readDetails[0]\t$readDetails[3]\t$readDetails[4]\t$s[4]\t$s[3]\t$readDetails[5]\n];
-                    if( $print ne $lastLine )
-                    {
-                        print $cofh $print;
-                    }
-                    $readsAligned{ $readDetails[ 0 ] } = 1;
-                    $lastLine = $print;
-                }
-            }
-            close( $efh );
-            
-            if( $lastLine ne qq[-- completed exonerate analysis] ){die qq[SR alignment did not complete correctly\n];}
-        }
     }
     
     if( $clean )
@@ -729,7 +599,7 @@ sub _findInsertions
     }
     
     my $sortedCandidates = qq[$$.merge.PE.sorted.tab];
-    system( qq[sort -k4,4d -k1,1d -k2,2n $merged | uniq > $sortedCandidates] ) == 0 or die qq[Failed to sort merged SR input files\n];
+    system( qq[sort -k4,4d -k1,1d -k2,2n $merged | uniq > $sortedCandidates] ) == 0 or die qq[Failed to sort merged input files\n];
     
     my $ignoreRGsFormatted = undef;
     if( $ignoreRGs )
@@ -972,208 +842,6 @@ sub _findInsertions
 	}
 }
 
-sub _findInsertionsSR
-{
-    my $bamsRef = shift;my @bams = @{$bamsRef};
-    my $sample = shift;
-    my $input = shift;
-    my $ref = shift;
-    my $output = shift;
-    my $minReads = shift;
-    my $depth = shift;
-    my $region = shift;
-    my $clean = shift;
-    my $tempR  = shift;my %filterBEDs; %filterBEDs = %{$tempR} if( defined( $tempR ) );
-    my $hets = shift;
-    my $ignoreRGsFormatted = shift;
-    my $novel = shift;
-    
-    my @files;
-    if( -f $input )
-    {
-        my $first = `head -1 $input`;chomp( $first );
-        if( -f $first ) #is this a fofn
-        {
-            open( my $ifh, $input ) or die qq[failed to open fofn of SR discovery output files: $input\n];
-            while(my $file = <$ifh> )
-            {
-                chomp( $file );
-                if( -f $file ){push(@files, $file);}else{die qq[Cant find discovery output file: $file\n];}
-            }
-            print qq[Found ].scalar(@files).qq[ SR discovery stage input files\n\n];
-            close( $ifh );
-        }else{push( @files, $input );}#looks like a discovery output file
-    }
-    else
-    {
-        @files = glob( qq[$input*] ) or die qq[Failed to glob files: $input*\n];
-        die qq[Cant find any inputs files with prefix $input*\n] if( ! @files || @files == 0 );
-    }
-    
-    #parse the region
-    my ($chr, $start, $end) = (undef, undef, undef);
-    if( defined( $region ) )
-    {
-        if( $region =~ /^([A-Za-z0-9]+):([0-9]+)-([0-9]+)$/ )
-        {
-            $chr = $1;$start=$2;$end=$3;
-            print qq[Restricting calling to region: $region\n];
-        }
-        else{$chr = $region;print qq[Restricting calling to Chr: $chr\n];}
-    }
-    
-    #merge the SR discovery files together and sort them by type, chr, position cols
-    foreach my $file( @files )
-    {
-        system(qq[cat $file >> $$.merge.SR.tab]) == 0 or die qq[Failed to merge SR input files\n];
-    }
-    
-    my $sortedCandidates = qq[$$.merge.SR.sorted.tab];
-    system( qq[sort -k4,4d -k1,1d -k2,2n $$.merge.SR.tab | uniq > $sortedCandidates] ) == 0 or die qq[Failed to sort merged SR input files\n];
-    
-    if( $chr )
-    {
-        if( $start && $end )
-        {
-            system(qq[echo -e "$chr\t$start\t$end" > $$.region.bed ]) == 0 or die qq[failed to defined region];
-            system(qq/awk '\$1=="$chr"&&\$2>$start&&\$3<$end' $sortedCandidates > $$.merge.SR.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
-            $sortedCandidates = qq[$$.merge.SR.sorted.region.tab];
-        }
-        else #just the chr is defined
-        {
-            system(qq/awk '\$1=="$chr"' $sortedCandidates > $$.merge.SR.sorted.region.tab/) == 0 or die qq[failed to grep chr out from reads file];
-            $sortedCandidates = qq[$$.merge.SR.sorted.region.tab];
-        }
-    }
-    
-    #grab the reads that didnt match any TE into a separate file (to use as evidence when calling individual elements) - NEED to adjust the coords to the actual breakpoints first
-    open( my $tfh, $sortedCandidates ) or die qq[failed to open candidates file: $!\n];
-    open( my $ufh, qq[>$$.merge.SR.unknown.tab] );
-    while( my $line = <$tfh> )
-    {
-        chomp( $line );
-        my @s = split( /\t/, $line );
-        next unless $s[ 4 ] eq 'unknown';
-        my $breakpoint = RetroSeq::Utilities::calculateCigarBreakpoint( $s[ 1 ], $s[ 6 ] );
-        my $orientation = ($s[ 5 ] & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
-        print $ufh qq[$s[0]\t$breakpoint\t$breakpoint\tunknown\t$orientation\n];
-    }
-    close( $tfh );
-    close( $ufh );
-    
-    open( $tfh, qq[$sortedCandidates] ) or die qq[Failed to open merged tab file: $!\n];
-    my %typeBEDFiles;
-    my $currentType = '';
-    my $cfh;
-    my $readCount = 0;
-    my %currentReads;
-    while( my $line = <$tfh> )
-    {
-        my @s = split( /\t/, $line );#print qq[$line\n];
-        if( $currentType eq '' )
-        {
-            $currentType = $s[ 3 ];
-            print qq[SR Call: $currentType\n];
-            open( $cfh, qq[>$$.$currentType.sr_anchors.bed] ) or die $!;
-        }
-        elsif( $currentType ne $s[ 3 ] || eof( $tfh ) )
-        {
-            close( $cfh );
-            
-            if( $currentType ne 'unknown' || ($novel && $currentType eq 'unknown') )
-            {
-                #resort the bed file by pos
-                system( qq[sort -k1,1d -k2,2n $$.$currentType.sr_anchors.bed $$.merge.SR.unknown.tab > $$.$currentType.sr_anchors.sorted.bed] ) == 0 or die qq[Sort failed on $currentType\n];
-                
-                #call the regions
-                my $minReads = $currentType eq 'unknown' ? $DEFAULT_SR_MIN_UNKNOWN_CLUSTER_READS : $DEFAULT_SR_MIN_CLUSTER_READS;
-                if( $readCount > 0 && RetroSeq::Utilities::convertToRegionBedPairsWindowBED( qq[$$.$currentType.sr_anchors.sorted.bed], $minReads, $currentType, $MAX_READ_GAP_IN_REGION, $DEFAULT_MAX_SR_CLUSTER_DIST, 0, 1, qq[$$.$currentType.sr_calls.bed] ) > 0 )
-                {
-                    my $bedCalls = qq[$$.$currentType.sr_calls.bed];
-                    
-                    #remove duplicate calls (if any)
-                    RetroSeq::Utilities::_removeDups( $bedCalls, qq[$$.$currentType.sr_calls.rmdup.bed] );
-                    $bedCalls = qq[$$.$currentType.sr_calls.rmdup.bed];
-                    $typeBEDFiles{ $currentType }{hom} = $bedCalls if( -f $bedCalls && -s $bedCalls > 0 );
-                    
-                    if( %filterBEDs && $typeBEDFiles{ $currentType }{hom} )
-                    {
-                        print qq[Filtering reference elements for: $currentType\n];
-                        #remove the regions specified in the exclusion BED file
-                        my $filtered = qq[$$.$currentType.sr_calls.rmdup.filtered.bed];
-                        if( $filterBEDs{ $currentType } )
-                        {
-                            RetroSeq::Utilities::filterOutRegions( $bedCalls, $filterBEDs{ $currentType }, $filtered );
-                            $bedCalls = $filtered;
-                        }
-                    }
-                    
-                    $typeBEDFiles{ $currentType }{hom} = $bedCalls;
-                }else{unlink( qq[$$.$currentType.sr_anchors.bed], qq[$$.$currentType.sr_anchors.sorted.bed] );}
-            }
-            last if( eof( $tfh ) );
-            
-            %currentReads = ();
-            $readCount = 0;
-            $currentType = $s[ 3 ];
-            open( $cfh, qq[>$$.$currentType.sr_anchors.bed] ) or die $!;
-        }
-        elsif( ! $currentReads{ $s[4] } )
-        {
-            #check it is paired correctly   AND there is only 1 breakpoint on the read
-            if( ( $s[ 5 ] & $$BAMFLAGS{'read_paired'}) && ($s[6]=~tr/S/S/) == 1 )
-            {
-                my $orientation = ($s[ 5 ] & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
-                
-                #get the actual breakpoint from the cigar string, flag, and position field
-                my $breakpoint = RetroSeq::Utilities::calculateCigarBreakpoint( $s[ 1 ], $s[ 6 ] );
-                
-                print $cfh qq[$s[0]\t$breakpoint\t$breakpoint\t$currentType\t$orientation\n];
-                $readCount ++;
-                $currentReads{ $s[4] } = 1;
-            }
-        }
-    }
-    close( $tfh );
-    close( $cfh ) if( $cfh );
-    
-    if( $novel )
-    {
-        #remove all the unknown calls that overlap with calls that are assigned to a type
-        my $unknownHoms = $typeBEDFiles{unknown}{hom};
-        foreach my $type( keys( %typeBEDFiles ) )
-        {
-            next if( $type eq 'unknown' );
-            my $f = $typeBEDFiles{$type}{hom};
-            system( qq[cat $f >> $$.allcalls.bed] ) == 0 or die qq[Failed to cat file: $f] if( $f && -s $f );
-        }
-        
-        my $removed = RetroSeq::Utilities::filterOutRegions( $unknownHoms, qq[$$.allcalls.bed], qq[$$.unknownHoms.filtered] );
-        if( $removed > 0 )
-        {
-            print qq[Removed $removed hom unknown calls\n];
-            $typeBEDFiles{unknown}{hom} = qq[$$.unknownHoms.filtered];
-        }
-        
-        #test if the breakpoint looks like an inversion breakpoint
-        foreach my $type( keys( %typeBEDFiles ) )
-        {
-            my $homs = $typeBEDFiles{$type}{hom};
-            my $removed = RetroSeq::Utilities::checkBreakpointsSR($homs, \@bams, ($DEFAULT_SR_MIN_CLUSTER_READS * 2), $ignoreRGsFormatted, $DEFAULT_ANCHORQ, qq[$homs.breakpoints_checked]);
-            if( $removed > 0 ){$typeBEDFiles{$type}{hom} = qq[$homs.breakpoints_checked];}
-        }
-    }
-    
-    #make a VCF file with the calls
-    _outputCalls( \%typeBEDFiles, $sample, $ref, $output );
-    
-    if( $clean )
-	{
-	    #delete the intermediate files
-	    unlink( glob( qq[$$.*] ) ) or die qq[Failed to remove intermediate files: $!];
-	}
-}
-
 =pod
 the new and improved calling code from mouse paper
 takes a BED of rough call regions and refines them into breakpoints and does checking of the supporting
@@ -1253,114 +921,6 @@ sub _filterCallsBedMinima
 	close( $dfh );
 }
 
-=pod
-Idea is to take a list of bams for new samples (e.g. low cov),
-and look in the region around the VCF of calls to see if there is some
-support for the call in the new sample and output a new VCF with the
-new genotypes called
-=cut
-sub _genotype
-{
-    croak qq[Incorrect number of parameters to _gentoype function: ].scalar(@_) unless @_ == 10;
-    my $bam_fofn = shift;
-	my $input = shift;
-	my $ref = shift;
-    my $region = shift;
-	my $minMapQ = shift;
-	my $output = shift;
-	my $clean = shift;
-	my $hets = shift;
-	my $orientate = shift;
-	my $minReads = shift;
-	
-	#get the list of sample names
-    my %sampleBAM;
-    open( my $tfh, $bams ) or die $!;
-    while(<$tfh>)
-    {
-        chomp;
-        my $bam = $_;
-        die qq[Cant find BAM file: $_\n] unless -f $bam;
-        die qq[Cant find BAM index for BAM: $bam\n] unless (-f qq[$bam.bai] || -l qq[$bam.bai]);
-        
-        my $bams = [$bam];
-        my $s = RetroSeq::Utilities::getBAMSampleName( $bams );
-        if( $s ){$sampleBAM{ $s } = $bam;}else{die qq[Failed to determine sample name for BAM: $bam\nCheck SM tag in the read group entries.\n];exit;}
-    }close( $tfh );
-    
-    #parse the region
-    my ($chr, $start, $end) = (undef, undef, undef);
-    if( defined( $region ) )
-    {
-        if( $region =~ /^([A-Za-z0-9]+):([0-9]+)-([0-9]+)$/ )
-        {
-            $chr = $1;$start=$2;$end=$3;
-            print qq[Restricting genotyping to region: $region\n];
-        }
-        else{$chr = $region;print qq[Restricting genotyping to Chr: $chr\n];}
-    }
-    
-    my $vcf = Vcf->new(file=>$input);
-    $vcf->parse_header();
-    my $vcf_out = Vcf->new();
-    open( my $out, qq[>$output] ) or die $!;
-    foreach my $sample ( keys( %sampleBAM ) )
-	{
-	    $vcf_out->add_columns( $sample );
-	}
-	my $header = RetroSeq::Utilities::getVcfHeader( $vcf_out );
-	print $out qq[$header];
-	
-	open( my $ofh, qq[>$output.candidates] ) or die $!;
-    print $ofh qq[FILTER: chr\tstart\tend\ttype\_sample\tL_Fwd_both\tL_Rev_both\tL_Fwd_single\tL_Rev_single\tR_Fwd_both\tR_Rev_both\tR_Fwd_single\tR_Rev_single\tL_Last_both\tR_First_both\tDist\n];
-    while( my $entry = $vcf->next_data_hash() )
-    {
-        my $chr_ = $$entry{CHROM};
-        my $pos = $$entry{POS};
-        
-        if( defined( $chr ) )
-        {
-            if( $chr_ ne $chr )
-            {
-                next;
-            }
-            elsif( defined( $start ) && defined( $end ) )
-            {
-                if( $pos < $start ){next;}
-                elsif( $pos > $end ){last;}
-            }
-        }
-        
-        print qq[Genotyping call: $chr_\t$pos\n];
-        
-        #get the existing GT call
-        my @samples = keys( %{$$entry{gtypes}});
-        my $gt = $$entry{gtypes}{$samples[ 0 ]}{GT};
-        my $type = $$entry{INFO}{MEINFO};my @typeInfo = split( /,/, $type );
-        
-        foreach my $sample ( sort( keys( %sampleBAM ) ) )
-        {
-            my @bams = $sampleBAM{ $sample };
-            my $quality = RetroSeq::Utilities::testBreakPoint($chr_, $pos, \@bams, $minMapQ, qq[$chr_\t$pos\t].($pos+1).qq[\t].$typeInfo[0].qq[\t].$typeInfo[3].qq[\n], $ofh, undef, $minReads, 1 );
-            if( $quality )
-	        {
-	            $$entry{gtypes}{$sample}{GT} = $gt;
-                $$entry{gtypes}{$sample}{GQ} = $quality->[0];
-	        }
-	        else
-	        {
-	            $$entry{gtypes}{$sample}{GT} = qq[./.];
-                $$entry{gtypes}{$sample}{GQ} = '.';
-	        }
-        }
-        $vcf->format_genotype_strings($entry);
-        print $out $vcf_out->format_line($entry);
-    }
-    close( $ofh );
-    $vcf->close();
-	close( $out );
-}
-
 #***************************INTERNAL HELPER FUNCTIONS********************
 
 sub _getCandidateTEReadNames
@@ -1368,28 +928,16 @@ sub _getCandidateTEReadNames
     my $bam = shift;
     my $readgroups = shift;
     my $minAnchor = shift;
-    my $minSoftClip = shift;
     my $candidatesFasta = shift;
     my $candidatesBed = shift;
-    my $clippedFasta = shift;
     my $discordantMatesBed = shift;
-    my $singleEndsBed = shift;
     
     my %candidates;
     my $ffh;
-    if( defined($candidatesFasta) ){open( $ffh, qq[>$candidatesFasta] ) or die qq[ERROR: Failed to create fasta file: $!\n];}
     open( my $afh, qq[>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
     my $sebfh;
-    if( $singleEndsBed )
-    {
-        open( $sebfh, qq[>>$singleEndsBed] ) or die qq[ERROR: Failed to single ends BED file: $!\n];
-    }
     
     my $cfh;
-    if( $minSoftClip )
-    {
-        open( $cfh, qq[>$clippedFasta] ) or die qq[ERROR: Failed to create clip fasta file: $!\n];
-    }
     open( my $dfh, qq[>>$discordantMatesBed] ) or die qq[ERROR: Failed to create discordant mates BED: $!\n];
     
     print qq[Opening BAM ($bam) and getting initial set of candidate mates....\n];
@@ -1405,7 +953,6 @@ sub _getCandidateTEReadNames
         my $name = $sam[ 0 ];
         my $ref = $sam[ 2 ];
         my $mref = $sam[ 6 ];
-        my $readLen = length( $sam[ 9 ] );
         my $cigar = $sam[ 5 ];
         
         if( $candidates{ $name } )
@@ -1421,13 +968,14 @@ sub _getCandidateTEReadNames
                     #record the read position details in the BED file of discordant mates
                     my $pos = $sam[ 3 ];
                     my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
-                    print $dfh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\t$qual\n];
+                    my $endPos = RetroSeq::Utilities::getSAMendpos($pos,$sam[5]);
+                    print $dfh qq[$ref\t$pos\t$endPos\t$name\t$dir\t$qual\n];
                 }
                 delete( $candidates{ $name } );
             }
         }
         
-        my $supporting = RetroSeq::Utilities::isSupportingClusterRead( $flag, $sam[ 8 ], $qual, $minAnchor, $minSoftClip, $cigar, undef, undef, undef );
+        my $supporting = RetroSeq::Utilities::isSupportingClusterRead( $flag, $sam[ 8 ], $qual, $minAnchor, $cigar, undef, undef, undef );
         
         if( $supporting > 0 )
         {
@@ -1437,8 +985,8 @@ sub _getCandidateTEReadNames
                
                my $pos = $sam[ 3 ];
                my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
-               print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\n];
-               print $sebfh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\n] if( $singleEndsBed );
+               my $endPos = RetroSeq::Utilities::getSAMendpos($pos,$sam[5]);
+               print $afh qq[$ref\t$pos\t$endPos\t$name\t$dir\n];
             }
             elsif( $supporting == 2 ) #discordantly mapped
             {
@@ -1446,59 +994,15 @@ sub _getCandidateTEReadNames
                    
                my $pos = $sam[ 3 ];
                my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
-               print $afh qq[$ref\t$pos\t].($pos+$readLen).qq[\t$name\t$dir\n];
-            }
-            
-            #if in SR mode - then see if it is a candidate split read
-            #                               read mapped                             mate mapped                            mate on same chr             ins size sensible          has single soft clip in cigar bigger than minimum clip size
-            if( $minSoftClip && ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ! ( $flag & $$BAMFLAGS{'mate_unmapped'} ) && ( $mref eq '=' || $mref eq $ref ) && $sam[ 8 ] < 3000 && ($cigar=~tr/S/S/) == 1 && $cigar =~ /(\d+)(S)/ && $1 > $minSoftClip )        #( $flag & $$BAMFLAGS{'read_paired'} ) 
-            {
-                my $seq = $sam[ 9 ];
-                my $quals = $sam[ 10 ];
-                
-                #check there arent high numbers of mismatches in the aligned portion (via MD tag if available)
-                if( $samLine =~ /\tMD:Z:([0-9ACGT\^]+)/ )
-                {
-                    my $md = $1;
-                    my $mismatches = ( $md =~ tr/ACGT/n/ );
-                    if( $mismatches <= 5 )
-                    {
-                        #clip at start of alignment
-                        if( $cigar =~ /^(\d+)S/ )
-                        {
-                            my $clip = $1;
-                            if( ( $flag & $$BAMFLAGS{'reverse_strand'} ) )
-                            {
-                                if( _checkAvgQuality( substr($quals, length($seq)-$clip) ) ){print $cfh qq[>$name###$sam[2]###$sam[3]###$flag###$cigar###$sam[8]\n];print $cfh substr($seq, length($seq)-$clip).qq[\n];}
-                            }
-                            else
-                            {
-                                if( _checkAvgQuality( substr($quals, 0, $clip ) ) ){print $cfh qq[>$name###$sam[2]###$sam[3]###$flag###$cigar###$sam[8]\n];print $cfh substr($seq, 0, $clip ).qq[\n];}
-                            }
-                        }
-                        elsif( $cigar =~ /(\d+)S$/ )
-                        {
-                            my $clip = $1;
-                            if( ( $flag & $$BAMFLAGS{'reverse_strand'} ) )
-                            {
-                                if( _checkAvgQuality( substr($quals, 0, $clip ) ) ){print $cfh qq[>$name###$sam[2]###$sam[3]###$flag###$cigar###$sam[8]\n];print $cfh substr($seq, 0, $clip ).qq[\n];}
-                            }
-                            else
-                            {
-                                if( _checkAvgQuality( substr($quals, length($seq)-$clip) ) ){print $cfh qq[>$name###$sam[2]###$sam[3]###$flag###$cigar###$sam[8]\n];print $cfh substr($seq, length($seq)-$clip).qq[\n];}
-                            }
-                        }
-                    }
-                }
+               my $endPos = RetroSeq::Utilities::getSAMendpos($pos,$sam[5]);
+               print $afh qq[$ref\t$pos\t$endPos\t$name\t$dir\n];
             }
         }
         if( $currentChr ne $ref && $ref ne '*' ){print qq[Reading chromosome: $ref\n];$currentChr = $ref;}
     }
     close( $bfh );
     if( defined($candidatesFasta) ){close( $ffh );}
-    close( $afh );close( $sebfh ) if( $singleEndsBed );
-    if( $minSoftClip ){close( $cfh );}
-    close( $dfh );
+    close( $afh );close( $dfh );
     
     return \%candidates;
 }
@@ -1684,16 +1188,6 @@ sub _removeExtremeDepthCalls
 	return 1;
 }
 
-sub _sortBED
-{
-    my $input = shift;
-    my $output = shift;
-    
-    croak qq[Cant find intput file for BED sort: $input\n] unless -f $input;
-    system( qq[sort -k 1,1d -k 2,2n $input > $output] ) == 0 or die qq[Failed to sort BED file: $input\n];
-    return 1;
-}
-
 sub _revCompDNA
 {
 	croak "Usage: revCompDNA string\n" unless @_ == 1;
@@ -1748,104 +1242,5 @@ sub _tab2Hash
     close( $tfh );
     
     return \%hash;
-}
-
-sub _filterBED
-{
-    my $bed = shift;
-    my $chr = shift;
-    my $start;my $end;
-    if( @_ == 2 )
-    {
-        $start = shift;
-        $end = shift;
-    }
-    
-    open( my $ofh, qq[>$$.filter.temp] ) or die $!;
-    open( my $ifh, $bed ) or die $!;
-    while( my $line = <$ifh> )
-    {
-        chomp( $line );
-        my @s = split( /\t/, $line );
-        if( defined($start) && defined($end) )
-        {
-            next unless $s[ 0 ] eq $chr && $s[ 1 ] > $start && $s[ 2 ] < $end;
-        }
-        else{next unless $line =~ /^$chr\t/;}
-        print $ofh qq[$line\n];
-    }
-    close( $ifh );close( $ofh );
-    
-    unlink( $bed ) or die qq[Failed to remove sorted BED: $!];
-    rename(qq[$$.filter.temp], $bed) or die qq[Failed to rename filtered BED: $!];
-}
-
-sub _mergeDiscoveryOutputs
-{
-    my $t = shift;
-    my @files = @{ $t };
-    my $output = shift;
-    
-    my %typeFile;
-    my $typeCount = 0;
-    my $currentFh;
-    my $header;
-    
-    #iterate through the files
-    foreach my $file ( @files )
-    {
-        die qq[Cant find candidates file: $file\n] unless -f $file;
-        
-        #check its a valid discovery output file - not truncated etc.
-        _checkDiscoveryOutput( $file );
-
-        open( my $tfh, $file ) or die $!;
-        $header = <$tfh>; chomp( $header );
-        while( my $line = <$tfh> )
-        {
-            chomp( $line );
-            next if( $line =~ /^#/ || $line =~ /^TE_TYPE_END/ );
-            if( $line =~ /^(TE_TYPE_START)(\s+)(.+)$/ )
-            {
-                my $currentType = $3;
-                                
-                if( ! $typeFile{ $currentType } )
-                {
-                    $typeFile{ $currentType } = qq[$$.merged.$typeCount];
-                    $typeCount ++;
-                }
-                
-                if( $currentFh ){close( $currentFh );}
-                open( $currentFh, qq[>>].$typeFile{ $currentType } ) or die $!;
-            }
-            else
-            {
-                print $currentFh qq[$line\n];
-            }
-        }
-        close( $tfh );
-    }
-    if( $currentFh ){close( $currentFh );}
-    
-    open( my $ofh, qq[>$output] ) or die $!;
-    #now merge into a single file
-    print $ofh $HEADER.qq[\n];
-    foreach my $type ( keys( %typeFile ) )
-    {
-        print $ofh qq[TE_TYPE_START $type\n];
-        open( my $ifh, $typeFile{ $type } ) or die $!;
-        while( <$ifh> )
-        {
-            chomp;
-            print $ofh qq[$_\n];
-        }
-        close( $ifh );
-        print $ofh qq[TE_TYPE_END\n];
-        
-        #delete all of the intermediate files
-        unlink( $typeFile{ $type } ) or die qq[Failed to delete intermediate file\n];
-    }
-    print $ofh $FOOTER.qq[\n];
-    close( $ofh );
 }
 
