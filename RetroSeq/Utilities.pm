@@ -130,7 +130,7 @@ sub _local_min_max
 
 sub testBreakPoint
 {
-    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 10;
+    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 9;
     
     my $chr = shift;
     my $refPos = shift;
@@ -141,7 +141,6 @@ sub testBreakPoint
     my $dfh = shift; #file handle to print out info on failed calls
     my $ignoreRGs = shift; #file of lines with "RG:tag\t"
     my $minReads = shift;
-    my $minSoftClip = shift;
     my $genotypeMode = shift; #0/1 saying whether to operate in genotyping mode (i.e. less stringent criteria)
     
     my @originalCallA = split( /\t/, $originalCall );
@@ -183,7 +182,7 @@ sub testBreakPoint
 	    chomp( $sam );
 	    my @s = split( /\t/, $sam );
 	    
-	    my $supporting = isSupportingClusterRead( $s[ 1 ], $s[ 8 ], $s[ 4 ], $minMapQ, $minSoftClip, $s[ 5 ], $refPos, $s[ 3 ], length( $s[9] ) );
+	    my $supporting = isSupportingClusterRead( $s[ 1 ], $s[ 8 ], $s[ 4 ], $minMapQ, $s[ 5 ], $refPos, $s[ 3 ], length( $s[9] ) );
 	    if( $supporting  == 2 )
 	    {
             if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand

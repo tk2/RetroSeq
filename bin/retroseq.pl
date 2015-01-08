@@ -35,7 +35,6 @@ my $DEFAULT_READS = 10;
 my $MAX_READ_GAP_IN_REGION = 120;
 my $DEFAULT_MIN_CLUSTER_READS = 2;
 my $DEFAULT_MAX_CLUSTER_DIST = 4000;
-my $DEFAULT_MIN_SOFT_CLIP = 30;
 
 my $HEADER = qq[#retroseq v:].$RetroSeq::Utilities::VERSION;
 my $FOOTER = qq[#END_CANDIDATES];
@@ -888,7 +887,7 @@ sub _filterCallsBedMinima
 	    
         print qq[Testing breakpoint $breakpoint\n];
         
-        my $result = RetroSeq::Utilities::testBreakPoint( $originalCallA[ 0 ], $breakpoint, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, $DEFAULT_MIN_SOFT_CLIP, 0 );
+        my $result = RetroSeq::Utilities::testBreakPoint( $originalCallA[ 0 ], $breakpoint, \@bams, $minMapQ, $originalCall, $dfh, $ignoreRGsFormatted, $minReads, 0 );
         
         my $flag = $result->[0];
         my $call = $result->[1];
@@ -964,11 +963,11 @@ sub _getCandidateTEReadNames
                 if( _sequenceQualityOK( $seq ) )
                 {
                     if( defined($candidatesFasta) ){print $ffh qq[>$name\n$seq\n];}
-                    
+
                     #record the read position details in the BED file of discordant mates
                     my $pos = $sam[ 3 ];
                     my $dir = ($flag & $$BAMFLAGS{'reverse_strand'}) ? '-' : '+';
-                    my $endPos = RetroSeq::Utilities::getSAMendpos($pos,$sam[5]);
+                    my $endPos = RetroSeq::Utilities::getSAMendpos($pos,$cigar);
                     print $dfh qq[$ref\t$pos\t$endPos\t$name\t$dir\t$qual\n];
                 }
                 delete( $candidates{ $name } );
