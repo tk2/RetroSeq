@@ -247,7 +247,7 @@ USAGE
     
 
     print qq[Beginning paired-end calling...\n];
-    _findInsertions( \@bams, $sampleName, $input, $ref, $output.qq[.PE.vcf], $reads, $depth, $anchorQ, $region, $clean, \%filterBEDs, 1, $orientate, $ignoreRGsFofn, $callNovel );
+    _findInsertions( \@bams, $sampleName, $input, $ref, $output, $reads, $depth, $anchorQ, $region, $clean, \%filterBEDs, 1, $orientate, $ignoreRGsFofn, $callNovel );
 	exit;
 }
 else
@@ -933,6 +933,7 @@ sub _getCandidateTEReadNames
     
     my %candidates;
     my $ffh;
+    if( $candidatesFasta ){open( $ffh, qq[>>$candidatesFasta] );}
     open( my $afh, qq[>$candidatesBed] ) or die qq[ERROR: Failed to create anchors file: $!\n];
     my $sebfh;
     
