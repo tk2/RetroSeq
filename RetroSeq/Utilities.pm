@@ -34,7 +34,7 @@ my $BAMFLAGS =
     'mate_reverse'   => 0x0020,
     '1st_in_pair'    => 0x0040,
     '2nd_in_pair'    => 0x0080,
-    'not_primary'    => 0x0100,
+    'secondary'    => 0x0100,
     'failed_qc'      => 0x0200,
     'duplicate'      => 0x0400,
 };
@@ -181,17 +181,16 @@ sub testBreakPoint
 	{
 	    chomp( $sam );
 	    my @s = split( /\t/, $sam );
-	    
 	    my $supporting = isSupportingClusterRead( $s[ 1 ], $s[ 8 ], $s[ 4 ], $minMapQ, $s[ 5 ], $refPos, $s[ 3 ], length( $s[9] ) );
 	    if( $supporting  == 2 )
 	    {
             if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
-            {
+            {print qq[R: $s[0] $s[3]\n];
                 #need to check
                 if( $s[ 3 ] < $refPos ){$lhsRevBlue++;push(@lhsRev, $s[0]);}else{$rhsRevBlue++;$firstSupportingPos = $s[ 3 ] if( $s[ 3 ] < $firstSupportingPos );push(@rhsRev, $s[0]);}
             }
             else
-            {
+            {print qq[F: $s[0] $s[3]\n];
                 if( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastSupportingPos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastSupportingPos );push(@lhsFwd, $s[0]);}else{$rhsFwdBlue++;push(@rhsFwd, $s[0]);}
             }
         }
@@ -228,7 +227,7 @@ sub testBreakPoint
 #			$totalSpanningRPs ++;
 #        }
         #determine outer co-ordinate of read (ex clipping)
-        if( $s[ 1 ] & $$BAMFLAGS{'paired_tech'} && !($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) )
+        if( $s[ 1 ] & $$BAMFLAGS{'paired_tech'} && !($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[1] & $$BAMFLAGS{'secondary'}) )
         {
             if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )
             {
@@ -356,7 +355,7 @@ sub getCandidateBreakPointsDirVote
         {
             $gap++;
             my $add = 0;if( $endCounts{ $i } ){$add=$endCounts{ $i };}
-            if($gap%100==0&&$fwdCount{$i-1}>0)
+            if($gap%30==0&&$fwdCount{$i-1}>0)
             {
                 $fwdCount{$i}=$fwdCount{$i-1} - 1 + $add;
             }
@@ -365,7 +364,7 @@ sub getCandidateBreakPointsDirVote
                 $fwdCount{$i}=$fwdCount{$i-1} + $add;
             }
         }
-        for(my $i=$revCurrentPos;$i<$samL[3];$i++ ){$gap++;if($gap%100==0&&$revCount{$i-1}<0){$revCount{$i}=$revCount{$i-1} + 1;}else{$revCount{$i}=$revCount{$i-1};}}
+        for(my $i=$revCurrentPos;$i<$samL[3];$i++ ){$gap++;if($gap%30==0&&$revCount{$i-1}<0){$revCount{$i}=$revCount{$i-1} + 1;}else{$revCount{$i}=$revCount{$i-1};}}
         
         #       paired technology                       not paired correctly                    is on fwd strand
         if( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && !( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #fwd supporting read
@@ -380,7 +379,7 @@ sub getCandidateBreakPointsDirVote
             no warnings 'uninitialized'; #perl warns when the value is 0
             $revCount{ $samL[ 3 ] } = $revCount{ $samL[ 3 ] - 1 } - 1;
             $revCurrentPos = $samL[ 3 ] + 1;
-        }
+        }		
     }
     close( $tfh );
     
@@ -397,7 +396,7 @@ sub getCandidateBreakPointsDirVote
     {
         last if( ! defined( $fwdCount{$i} ) || ! defined( $revCount{$i} ) );
         my $sum = $fwdCount{$i}+$revCount{$i};
-        #print qq[$i\t$sum\n];
+
         if( $fwdCount{$i}+$revCount{$i} > $maxVal )
         {
             $maxPos = $i;
@@ -412,7 +411,6 @@ sub getCandidateBreakPointsDirVote
     }
     
     return undef if( ! @maxPoss );
-    
     $maxPos = $maxPoss[ int(scalar(@maxPoss)/2) ];
     
     #get the depth at the position
