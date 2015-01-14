@@ -900,17 +900,9 @@ sub _filterCallsBedMinima
         }
         elsif( $flag > $RetroSeq::Utilities::NOT_ENOUGH_READS_CLUSTER )
         {
-            #decide if its a hom or het call by the depth
-            if( $depth <= 10 )
-            {
-                print qq[Hom breakpoint score: $ratio Flag: $flag\n];
-                print $homsfh $call.qq[\t$flag\t$spanningRPs\n];
-            }
-            else
-            {
-                print qq[Het breakpoint score: $ratio Flag: $flag\n];
-                print $hetsfh $call.qq[\t$flag\t$spanningRPs\n];
-            }
+            #note to self - disabled the hom/het decision code (needs to be rewritten)
+            print qq[Breakpoint score: $ratio Flag: $flag\n];
+            print $homsfh $call.qq[\t$flag\t$spanningRPs\n];
         }
         else{print qq[Discarding: $call : $flag\n];}
 	}
