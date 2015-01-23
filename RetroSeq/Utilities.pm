@@ -182,16 +182,18 @@ sub testBreakPoint
 	    chomp( $sam );
 	    my @s = split( /\t/, $sam );
 	    my $supporting = isSupportingClusterRead( $s[ 1 ], $s[ 8 ], $s[ 4 ], $minMapQ, $s[ 5 ], $refPos, $s[ 3 ], length( $s[9] ) );
+		
 	    if( $supporting  == 2 )
 	    {
-            if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
-            {print qq[R: $s[0] $s[3]\n];
-                #need to check
-                if( $s[ 3 ] < $refPos ){$lhsRevBlue++;push(@lhsRev, $s[0]);}else{$rhsRevBlue++;$firstSupportingPos = $s[ 3 ] if( $s[ 3 ] < $firstSupportingPos );push(@rhsRev, $s[0]);}
+			if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
+            {
+				if( $s[ 5 ] =~ /^[0-9]{2}+S/ ){$rhsRevBlue++;push(@rhsRev, $s[0]);}
+                elsif( $s[ 3 ] < $refPos ){$lhsRevBlue++;push(@lhsRev, $s[0]);}else{$rhsRevBlue++;$firstSupportingPos = $s[ 3 ] if( $s[ 3 ] < $firstSupportingPos );push(@rhsRev, $s[0]);}
             }
             else
-            {print qq[F: $s[0] $s[3]\n];
-                if( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastSupportingPos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastSupportingPos );push(@lhsFwd, $s[0]);}else{$rhsFwdBlue++;push(@rhsFwd, $s[0]);}
+            {
+				if( $s[ 5 ] =~ /[0-9]{2}+S$/ ){$lhsFwdBlue++;push(@lhsFwd, $s[0]);}
+                elsif( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastSupportingPos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastSupportingPos );push(@lhsFwd, $s[0]);}else{$rhsFwdBlue++;push(@rhsFwd, $s[0]);}
             }
         }
         #        the mate is unmapped
@@ -199,18 +201,14 @@ sub testBreakPoint
         {
             if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
             {
-                if( $s[ 3 ] < $refPos ){$lhsRevGreen++;push(@lhsRev, $s[0]);}else{$rhsRevGreen++;$firstSupportingPos = $s[ 3 ] if( $s[ 3 ] < $firstSupportingPos );push(@rhsRev, $s[0]);}
+				if( $s[ 5 ] =~ /^[0-9]{2}+S/ ){$rhsRevGreen++;push(@rhsRev, $s[0]);}
+                elsif( $s[ 3 ] < $refPos ){$lhsRevGreen++;push(@lhsRev, $s[0]);}else{$rhsRevGreen++;$firstSupportingPos = $s[ 3 ] if( $s[ 3 ] < $firstSupportingPos );push(@rhsRev, $s[0]);}
             }
             else
             {
-                if( $s[ 3 ] < $refPos ){$lhsFwdGreen++;$lastSupportingPos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastSupportingPos );push(@lhsFwd, $s[0]);}else{$rhsFwdGreen++;push(@rhsFwd, $s[0]);}
+				if( $s[ 5 ] =~ /[0-9]{2}+S$/ ){$lhsFwdGreen++;push(@lhsFwd, $s[0]);}
+                elsif( $s[ 3 ] < $refPos ){$lhsFwdGreen++;$lastSupportingPos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastSupportingPos );push(@lhsFwd, $s[0]);}else{$rhsFwdGreen++;push(@rhsFwd, $s[0]);}
             }
-        }
-        #soft clipped read supporting the breakpoint
-        elsif( $supporting == 3 )
-        {
-            $softClipSupporting ++;
-            push(@soft, $s[0]);
         }
         
         #       read is mapped                                  mate is mapped                           not paired correctly                  ins size < 50k               both mates are mapped to same strand
@@ -219,13 +217,6 @@ sub testBreakPoint
             $numSameOrientation ++;
         }
         
-        #see if the read pair spans the breakpoint for (only necessary to count for 5' reads)
-        #       5' of breakpoint                read is mapped                  mate mapped                                 paired correctly                        mapped to same chr                  mate mapped on 3' side of breakpoint
-#        if( $s[ 3 ] < ($refPos-length($s[9])) && !($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} ) && ( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && ($s[6] eq '=' || $s[6] eq $s[2]) && $s[7] > ($refPos+length($s[9])) )
-#        {
-#            $avgInsSpanning=(($avgInsSpanning*$totalSpanningRPs)+$s[8])/($totalSpanningRPs+1);
-#			$totalSpanningRPs ++;
-#        }
         #determine outer co-ordinate of read (ex clipping)
         if( $s[ 1 ] & $$BAMFLAGS{'paired_tech'} && !($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[1] & $$BAMFLAGS{'secondary'}) )
         {
@@ -244,7 +235,7 @@ sub testBreakPoint
     foreach my $pair(keys(%spanningFrags)){if($spanningFrags{$pair}{threeprime}&&$spanningFrags{$pair}{fiveprime}){$totalSpanningRPs++; print qq[SPAN: $pair\n];};}print qq[\n];
 =pod    
     foreach my $r(@lhsFwd){print qq[$r\t];}print qq[\n];
-    foreach my $r(@lhsRev){print qq[$r\t];}print qq[\n];
+    foreach my $r(@lhsRev){print qq[LREV $r\t];}print qq[\n];
     foreach my $r(@rhsFwd){print qq[$r\t];}print qq[\n];
     foreach my $r(@rhsRev){print qq[$r\t];}print qq[\n];
 =cut
@@ -268,11 +259,8 @@ sub testBreakPoint
     if( ! $genotypeMode ) #calling mode
     {
         #want to be more descriptive with filter values to return e.g. total reads too low, one-side ok only, sides OK but distance too large
-        #my $lhsRatioPass = ( $lhsRevBlue == 0 ) || ( $lhsRevBlue > 0 && $lhsFwdBlue / $lhsRevBlue > 2 );
-        #my $rhsRatioPass = ( $rhsFwdBlue == 0 ) || ( $rhsFwdBlue > 0 && $rhsRevBlue / $rhsFwdBlue > 2 );
         my $lhsRatioPass = ( $lhsRev == 0 ) || ( $lhsRev > 0 && $lhsFwd / $lhsRev >= 2 );
-        my $rhsRatioPass = ( $rhsFwd == 0 ) || ( $rhsFwd > 0 && $rhsRev / $rhsFwd >= 2 );
-#print qq[RR: $lhsFwd\t$lhsRev\t$lhsRatioPass\t$rhsFwd\t$rhsRev\t$rhsRatioPass\n]; 
+        my $rhsRatioPass = ( $rhsFwd == 0 ) || ( $rhsFwd > 0 && $rhsRev / $rhsFwd >= 2 ); 
         
         if( $totalSupporting < $minReads )
         {
@@ -355,29 +343,43 @@ sub getCandidateBreakPointsDirVote
         {
             $gap++;
             my $add = 0;if( $endCounts{ $i } ){$add=$endCounts{ $i };}
-            if($gap%30==0&&$fwdCount{$i-1}>0)
+            if($gap%20==0&&$fwdCount{$i-1}>0)
             {
                 $fwdCount{$i}=$fwdCount{$i-1} - 1 + $add;
             }
             else
             {
-                $fwdCount{$i}=$fwdCount{$i-1} + $add;
+                $fwdCount{$i}=defined($fwdCount{$i-1}) ? $fwdCount{$i-1} + $add : $add;
             }
         }
-        for(my $i=$revCurrentPos;$i<$samL[3];$i++ ){$gap++;if($gap%30==0&&$revCount{$i-1}<0){$revCount{$i}=$revCount{$i-1} + 1;}else{$revCount{$i}=$revCount{$i-1};}}
+		$gap=0;
+        for(my $i=$revCurrentPos;$i<$samL[3];$i++){$revCount{$i}=$revCount{$i-1};}
+        for(my $i=$samL[3]-2;$i>=$revCurrentPos;$i--){$gap++;if($gap%20==0){$revCount{$i}=$revCount{$i+1}+1;}else{$revCount{$i}=$revCount{$i+1}}}
         
         #       paired technology                       not paired correctly                    is on fwd strand
         if( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && !( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #fwd supporting read
         {
-            no warnings 'uninitialized'; #perl warns when the value is 0
             my $endPos = getSAMendpos($samL[3],$samL[5]);
-            if( $endCounts{ $endPos } ){$endCounts{$endPos}++;}else{$endCounts{$endPos} = 1;};
+            if( defined($endCounts{ $endPos } ))
+            {
+				if( $samL[5]=~/S$/){$endCounts{$endPos}+=2;}else{$endCounts{$endPos}++;}
+            }else
+            {
+                if( $samL[5]=~/S$/){$endCounts{$endPos}=2;}else{$endCounts{$endPos}=1;}
+            }
+            $fwdCurrentPos = $samL[3];
         }
         #       paired technology                       not paired correctly                    is on rev strand
         elsif( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && ( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #rev supporting read
         {
-            no warnings 'uninitialized'; #perl warns when the value is 0
-            $revCount{ $samL[ 3 ] } = $revCount{ $samL[ 3 ] - 1 } - 1;
+			if( defined($revCount{ $samL[ 3 ] - 1 } ) )
+            {
+                if($samL[5]=~/^[0-9]+S/){$revCount{ $samL[ 3 ] } = $revCount{ $samL[ 3 ] - 1 } - 2;}else{$revCount{ $samL[ 3 ] } = $revCount{ $samL[ 3 ] - 1 } - 1;}
+            }
+            else
+            {
+                if($samL[5]=~/^[0-9]+S/){$revCount{ $samL[ 3 ] } = -2;}else{$revCount{ $samL[ 3 ] } = -1;}
+            }
             $revCurrentPos = $samL[ 3 ] + 1;
         }		
     }
@@ -387,7 +389,7 @@ sub getCandidateBreakPointsDirVote
     my @s = sort {$a<=>$b} ( values( %revCount ) );
     my $min = $s[ 0 ];
     my @keys = keys(%revCount);
-    foreach my $key(@keys){$revCount{$key}+=abs($min);}
+    foreach my $key(@keys){if($revCount{$key}<=0){$revCount{$key}+=abs($min)}else{$revCount{$key}=($revCount{$key}*-1)+abs($min);}}
     
     #now find the position where the sum of the two counts maximises
     my $maxPos = $start;my @maxPoss;my $maxVal = $fwdCount{$start}+$revCount{$start};
@@ -396,7 +398,6 @@ sub getCandidateBreakPointsDirVote
     {
         last if( ! defined( $fwdCount{$i} ) || ! defined( $revCount{$i} ) );
         my $sum = $fwdCount{$i}+$revCount{$i};
-
         if( $fwdCount{$i}+$revCount{$i} > $maxVal )
         {
             $maxPos = $i;
