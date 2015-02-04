@@ -134,7 +134,7 @@ sub testBreakPoint
     
     my $chr = shift;
     my $refPos = shift;
-    die qq[Non integer value passed as refPos] unless defined( $refPos ) && $refPos =~ /^\d+$/;
+    die qq[Non integer value passed as refPos: $refPos] unless defined( $refPos ) && $refPos =~ /^\d+$/;
 	my @bams = @{ $_[ 0 ] };shift;
     my $minMapQ = shift;
     my $originalCall = shift;
@@ -233,12 +233,6 @@ sub testBreakPoint
     }
     unlink( qq[/tmp/$$.region.bam] );
     foreach my $pair(keys(%spanningFrags)){if($spanningFrags{$pair}{threeprime}&&$spanningFrags{$pair}{fiveprime}){$totalSpanningRPs++; print qq[SPAN: $pair\n];};}print qq[\n];
-=pod    
-    foreach my $r(@lhsFwd){print qq[$r\t];}print qq[\n];
-    foreach my $r(@lhsRev){print qq[LREV $r\t];}print qq[\n];
-    foreach my $r(@rhsFwd){print qq[$r\t];}print qq[\n];
-    foreach my $r(@rhsRev){print qq[$r\t];}print qq[\n];
-=cut
 
     #if it appears to be an inversion breakpoint
     my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
@@ -306,8 +300,9 @@ sub getCandidateBreakPointsDirVote
     
     if( $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
     
-    my %fwdCount;
-    my %revCount;
+    my %fwdCount; #pos->read count
+    my %revCount; #pos->read count
+    my %spanPairs; #readname->f/r->outerpos
     
     my $cmd;
     if( @bams > 1 )
@@ -323,11 +318,6 @@ sub getCandidateBreakPointsDirVote
     }
     
     open( my $tfh, $cmd ) or die $!;
-    my $fwdCurrentPos = $start;
-    my $revCurrentPos = $start;
-    $fwdCount{ $fwdCurrentPos - 1 } = 0;
-    $revCount{ $revCurrentPos - 1 } = 0;
-    my %endCounts;
     while( my $sam = <$tfh> )
     {
         chomp( $sam );
@@ -337,67 +327,68 @@ sub getCandidateBreakPointsDirVote
         next if $samL[ 4 ] < $minQ;
         next if ( $flag & $$BAMFLAGS{'duplicate'} );
         
-        #update the counts to the current position
-        my $gap = 0; #apply a gap-open penalty to the score to avoid odd spurious read throwing off counts
-        for(my $i=$fwdCurrentPos;$i<$samL[3];$i++ )
-        {
-            $gap++;
-            my $add = 0;if( $endCounts{ $i } ){$add=$endCounts{ $i };}
-            if($gap%20==0&&$fwdCount{$i-1}>0)
-            {
-                $fwdCount{$i}=$fwdCount{$i-1} - 1 + $add;
-            }
-            else
-            {
-                $fwdCount{$i}=defined($fwdCount{$i-1}) ? $fwdCount{$i-1} + $add : $add;
-            }
-        }
-		$gap=0;
-        for(my $i=$revCurrentPos;$i<$samL[3];$i++){$revCount{$i}=$revCount{$i-1};}
-        for(my $i=$samL[3]-2;$i>=$revCurrentPos;$i--){$gap++;if($gap%20==0){$revCount{$i}=$revCount{$i+1}+1;}else{$revCount{$i}=$revCount{$i+1}}}
-        
-        #       paired technology                       not paired correctly                    is on fwd strand
-        if( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && !( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #fwd supporting read
+        #       paired technology                       is on fwd strand
+        if( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #fwd supporting read
         {
             my $endPos = getSAMendpos($samL[3],$samL[5]);
-            if( defined($endCounts{ $endPos } ))
+            if( $samL[5]=~/[0-9]+S$/)
             {
-				if( $samL[5]=~/S$/){$endCounts{$endPos}+=2;}else{$endCounts{$endPos}++;}
-            }else
-            {
-                if( $samL[5]=~/S$/){$endCounts{$endPos}=2;}else{$endCounts{$endPos}=1;}
+                if( defined( $fwdCount{$endPos} ) ){$fwdCount{$endPos}+=2;}else{$fwdCount{$endPos}=2;}
             }
-            $fwdCurrentPos = $samL[3];
+            elsif( !( $flag & $$BAMFLAGS{'read_paired'} ) ) # not paired correctly
+            {
+                if( defined($fwdCount{$endPos} )){$fwdCount{$endPos}=$fwdCount{$endPos}+1;}else{$fwdCount{$endPos}=1;}
+            }
+            else{$spanPairs{$samL[0]}{f}=$samL[3];}
         }
-        #       paired technology                       not paired correctly                    is on rev strand
-        elsif( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{'read_paired'} ) && ( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #rev supporting read
+        elsif( ( $flag & $$BAMFLAGS{'paired_tech'} ) && ( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #rev supporting read
         {
-			if( defined($revCount{ $samL[ 3 ] - 1 } ) )
+            my $endPos = getSAMendpos($samL[3],$samL[5]);
+            if( $samL[5]=~/^[0-9]+S/ )
             {
-                if($samL[5]=~/^[0-9]+S/){$revCount{ $samL[ 3 ] } = $revCount{ $samL[ 3 ] - 1 } - 2;}else{$revCount{ $samL[ 3 ] } = $revCount{ $samL[ 3 ] - 1 } - 1;}
-            }
-            else
+                if( defined( $revCount{$samL[ 3 ]} ) ){$revCount{$samL[ 3 ]}+=2;}else{$revCount{$samL[ 3 ]}=2;}
+			}
+            elsif( !( $flag & $$BAMFLAGS{'read_paired'} ) ) # not paired correctly
             {
-                if($samL[5]=~/^[0-9]+S/){$revCount{ $samL[ 3 ] } = -2;}else{$revCount{ $samL[ 3 ] } = -1;}
+                if( defined($revCount{$samL[ 3 ]} ) ){$revCount{$samL[3]}++;}else{$revCount{ $samL[ 3 ] }=1;}
             }
-            $revCurrentPos = $samL[ 3 ] + 1;
-        }		
+            else{$spanPairs{$samL[0]}{r}=$endPos;}
+        }
     }
     close( $tfh );
+
+    #now transform the fwdCount and revCount into a decaying profile of cumulative fwd and rev reads
+    my $lastUpdatePos = -1;
+    $fwdCount{$start}=0;
+    for(my $pos=$start+1;$pos<=$end;$pos++)
+    {
+        if(defined($fwdCount{$pos})){$lastUpdatePos=$pos;$fwdCount{$pos}=$fwdCount{$pos-1}+$fwdCount{$pos};}
+        else
+        {
+            $fwdCount{$pos}=$fwdCount{$pos-1};
+            if($lastUpdatePos!=-1&&$fwdCount{$pos}>0&&($pos-$lastUpdatePos)%20==0){$fwdCount{$pos}--;} #decay the cumulative total if 20bp without an increase have passed
+        }
+    }
     
-    #offset the rev array
-    my @s = sort {$a<=>$b} ( values( %revCount ) );
-    my $min = $s[ 0 ];
-    my @keys = keys(%revCount);
-    foreach my $key(@keys){if($revCount{$key}<=0){$revCount{$key}+=abs($min)}else{$revCount{$key}=($revCount{$key}*-1)+abs($min);}}
+    #now the revCount decaying profile
+    $lastUpdatePos = -1;
+    $revCount{$end}=0;
+    for(my $pos=$end-1;$pos>=$start;$pos--)
+    {
+        if(defined($revCount{$pos})){$lastUpdatePos=$pos;$revCount{$pos}=$revCount{$pos+1}+$revCount{$pos};}
+        else
+        {
+            $revCount{$pos}=$revCount{$pos+1};
+            if($lastUpdatePos!=-1&&$revCount{$pos}>0&&($lastUpdatePos-$pos)%20==0){$revCount{$pos}--;} #decay the cumulative total if 20bp without an increase have passed
+        }
+    }
     
     #now find the position where the sum of the two counts maximises
     my $maxPos = $start;my @maxPoss;my $maxVal = $fwdCount{$start}+$revCount{$start};
     
-    for(my $i=$start;$i<$revCurrentPos;$i++)
+    for(my $i=$start;$i<$end;$i++)
     {
-        last if( ! defined( $fwdCount{$i} ) || ! defined( $revCount{$i} ) );
-        my $sum = $fwdCount{$i}+$revCount{$i};
+        my $sum = $fwdCount{$i}+$revCount{$i};print qq[$i $fwdCount{$i} $revCount{$i}\n];
         if( $fwdCount{$i}+$revCount{$i} > $maxVal )
         {
             $maxPos = $i;
@@ -410,33 +401,31 @@ sub getCandidateBreakPointsDirVote
             push( @maxPoss, $i );
         }
     }
-    
+
     return undef if( ! @maxPoss );
-    $maxPos = $maxPoss[ int(scalar(@maxPoss)/2) ];
-    
-    #get the depth at the position
-    my $depth = 100;
-    $cmd = '';
-    if( @bams > 1 )
-    {
-        $cmd = qq[samtools mpileup -r $chr:$maxPos-$maxPos /tmp/$$.region.bam | ];
-    }
+    if( scalar(@maxPoss)==1){return [$maxPoss[0]];}
     else
     {
-        $cmd = qq/samtools mpileup -r $chr:$maxPos-$maxPos $bams[0] | /;
-    }
-    
-    open( my $ifh, $cmd ) or die qq[failed on samtools cmd: $cmd\n];
-    my $mpileupOut = <$ifh>;
-    
-    if( $mpileupOut )
-    {
-        @s = split( /\t/, $mpileupOut );
-        return [$maxPos, length($s[4]) ]; #also need to return the size of the window to the two clusters either side of the breakpoint
-    }
-    else
-    {
-        return [$maxPos,5000];
+        #breakpoint is not precise, therefore use spanning read pairs minimum to select the point
+        print qq[Refining imprecise breakpoint: $maxPoss[0] ].$maxPoss[scalar(@maxPoss)-1].qq[\n];
+        my %spanningPairs;
+        foreach my $pair(keys(%spanPairs))
+        {
+            next if(! ($spanPairs{$pair}{f} && $spanPairs{$pair}{r}) );
+            for(my $i=$spanPairs{$pair}{f};$i<$spanPairs{$pair}{r};$i++){$spanningPairs{$i}++;}
+        }
+        
+        if( $spanningPairs{$maxPoss[0]} )
+        {
+            my $minSpanning=$spanningPairs{$maxPoss[0]};my $minPosition=$maxPoss[0];
+            for(my $i=$maxPoss[0];$i<$maxPoss[scalar(@maxPoss)-1];$i++)
+            {  
+                if( defined($spanningPairs{$i}) && $spanningPairs{$i}<$minSpanning ){$minSpanning=$spanningPairs{$i};$minPosition=$i;}
+            }
+            
+            return [$minPosition, $maxPoss[0], $maxPoss[scalar(@maxPoss)-1]];
+        }
+        else{return [int(($maxPoss[0]+$maxPoss[scalar(@maxPoss)-1])/2), $maxPoss[0], $maxPoss[scalar(@maxPoss)-1]];}
     }
 }
 

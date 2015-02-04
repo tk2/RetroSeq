@@ -90,7 +90,7 @@ GetOptions
 
 print <<MESSAGE;
 
-RetroSeq: A tool for discovery and genotyping of transposable elements from short read alignments
+RetroSeq: A tool for discovery of transposable elements from short read alignments
 
 Version: $RetroSeq::Utilities::VERSION
 Author: Thomas Keane (thomas.keane\@sanger.ac.uk)
@@ -735,7 +735,6 @@ sub _findInsertions
     #identify hybrid insertions from unused clusters (in $$.hybrid.[pos|neg].out files)
     if( -s qq[$$.hybrid.pos.out] && -s qq[$$.hybrid.neg.out] )
     {
-        
         print qq[PE Call: Hybrid elements\n];
         my $rawTECalls1 = qq[$$.raw_calls.1.hybrid.tab];
         open(my $ofh, qq[>$rawTECalls1] ) or die $!;
@@ -755,7 +754,35 @@ sub _findInsertions
             print $ofh qq[$s[0]\t$start\t$end\t$s[3]-$s[9]-hybrid\t$totalReads\t].$RetroSeq::Utilities::PASS.qq[\n];$numRegions ++;
         }
         
-        close($bfh);close($ofh);
+        close($bfh);
+
+        #now get the clusters where there is only support on either 5 prime or 3 prime (so these can be tested for unknown reads on other side)
+        open( $bfh, qq[bedtools window -a $$.hybrid.pos.out -b $$.raw_calls.1.hybrid.tab -v | ] ) or die qq[bedtools failed for hybrids-unknown];
+        while( my $line=<$bfh> )
+        {
+            chomp($line);
+            my @s = split( /\t/, $line );
+            
+            my $totalReads = $s[ 5 ];
+            if( $totalReads >= $minReads )
+            {
+                print $ofh qq[$s[0]\t$s[1]\t].($s[2]+500).qq[\t$s[3]-unknown\t$totalReads].$RetroSeq::Utilities::PASS.qq[\n];$numRegions ++;
+            }
+        }
+        
+        open( $bfh, qq[bedtools window -a $$.hybrid.neg.out -b $$.raw_calls.1.hybrid.tab -v | ] ) or die qq[bedtools failed for hybrids-unknown];
+        while( my $line=<$bfh> )
+        {
+            chomp($line);
+            my @s = split( /\t/, $line );
+
+            my $totalReads = $s[ 5 ];
+            if( $totalReads >= $minReads )
+            {
+                print $ofh qq[$s[0]\t].($s[1]-500).qq[\t$s[2]\tunknown-$s[3]\t$totalReads].$RetroSeq::Utilities::PASS.qq[\n];$numRegions ++;
+            }
+        }
+        close($ofh);
         
         if( $numRegions > 0 )
         {
@@ -770,7 +797,7 @@ sub _findInsertions
             my $hetCalls = qq[$$.raw_calls.3.hybrid.het.bed];
           
             _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
-          
+            
             #remove close duplicated calls
             my $rmdupHomCalls = qq[$$.raw_calls.3.hybrid.hom.rmdup.bed];
             RetroSeq::Utilities::_removeDups( $homCalls, $rmdupHomCalls );
@@ -881,7 +908,7 @@ sub _filterCallsBedMinima
 	    
 	    my $t = RetroSeq::Utilities::getCandidateBreakPointsDirVote($originalCallA[0], $originalCallA[1], $originalCallA[2],\@bams,20 );
 	    if( ! $t ){warn qq[Failed to get candidate breakpoints for call $originalCall\n];next;}
-	    my $breakpoint = $t->[ 0 ];my $depth = $t->[ 1 ];
+	    my $breakpoint = $t->[ 0 ];
 	    
 	    if( $breakpointsTested{ $breakpoint } ){print qq[Duplicate breakpoint found: $breakpoint. Skipping.\n];next;}else{$breakpointsTested{$breakpoint} = 1;}
 	    
