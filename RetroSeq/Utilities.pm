@@ -388,7 +388,7 @@ sub getCandidateBreakPointsDirVote
     
     for(my $i=$start;$i<$end;$i++)
     {
-        my $sum = $fwdCount{$i}+$revCount{$i};print qq[$i $fwdCount{$i} $revCount{$i}\n];
+        my $sum = $fwdCount{$i}+$revCount{$i};
         if( $fwdCount{$i}+$revCount{$i} > $maxVal )
         {
             $maxPos = $i;
