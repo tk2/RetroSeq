@@ -140,7 +140,8 @@ USAGE
         $erefs = _tab2Hash( $eRefFofn );
         foreach my $type ( keys( %{$erefs} ) )
         {
-            if( ! -f $$erefs{$type} ){croak qq[Cant find transposon reference file: ].$$erefs{ $type };}
+            my $file = $$erefs{$type};
+			croak qq[Cant find transposon reference file: $file\n] if( ! -f $$erefs{$type} );
         }
         if( ! $doAlign ){print qq[Forcing -align option to be switched on as transposon sequence files were provided\n];$doAlign = 1;}
     }
@@ -152,7 +153,8 @@ USAGE
         $refTEsF = _tab2Hash( $refTEs );
         foreach my $type ( keys( %{$refTEsF} ) )
         {
-            if( ! -f $$refTEsF{$type} ){croak qq[Cant find $type reference TEs file: ].$$refTEsF{ $type };}
+			my $file = $$refTEsF{ $type };
+			croak qq[Cant find $type reference TEs file: $file\n] if( ! -f $$refTEsF{$type} );
         }
     }
     

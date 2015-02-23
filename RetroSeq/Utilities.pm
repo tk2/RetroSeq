@@ -339,7 +339,7 @@ sub getCandidateBreakPointsDirVote
             {
                 if( defined($fwdCount{$endPos} )){$fwdCount{$endPos}=$fwdCount{$endPos}+1;}else{$fwdCount{$endPos}=1;}
             }
-            else{$spanPairs{$samL[0]}{f}=$samL[3];}
+            elsif($samL[5]=~/^[0-9]+M$/){$spanPairs{$samL[0]}{f}=$samL[3];}
         }
         elsif( ( $flag & $$BAMFLAGS{'paired_tech'} ) && ( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #rev supporting read
         {
@@ -352,7 +352,7 @@ sub getCandidateBreakPointsDirVote
             {
                 if( defined($revCount{$samL[ 3 ]} ) ){$revCount{$samL[3]}++;}else{$revCount{ $samL[ 3 ] }=1;}
             }
-            else{$spanPairs{$samL[0]}{r}=$endPos;}
+            elsif($samL[5]=~/^[0-9]+M$/){$spanPairs{$samL[0]}{r}=$endPos;}
         }
     }
     close( $tfh );
@@ -366,7 +366,7 @@ sub getCandidateBreakPointsDirVote
         else
         {
             $fwdCount{$pos}=$fwdCount{$pos-1};
-            if($lastUpdatePos!=-1&&$fwdCount{$pos}>0&&($pos-$lastUpdatePos)%20==0){$fwdCount{$pos}--;} #decay the cumulative total if 20bp without an increase have passed
+            if($lastUpdatePos!=-1&&$fwdCount{$pos}>0&&($pos-$lastUpdatePos)%10==0){$fwdCount{$pos}--;} #decay the cumulative total if 10bp without an increase have passed
         }
     }
     
@@ -379,16 +379,17 @@ sub getCandidateBreakPointsDirVote
         else
         {
             $revCount{$pos}=$revCount{$pos+1};
-            if($lastUpdatePos!=-1&&$revCount{$pos}>0&&($lastUpdatePos-$pos)%20==0){$revCount{$pos}--;} #decay the cumulative total if 20bp without an increase have passed
+            if($lastUpdatePos!=-1&&$revCount{$pos}>0&&($lastUpdatePos-$pos)%10==0){$revCount{$pos}--;} #decay the cumulative total if 10bp without an increase have passed
         }
     }
     
     #now find the position where the sum of the two counts maximises
+=pod
     my $maxPos = $start;my @maxPoss;my $maxVal = $fwdCount{$start}+$revCount{$start};
     
     for(my $i=$start;$i<$end;$i++)
     {
-        my $sum = $fwdCount{$i}+$revCount{$i};
+        my $sum = $fwdCount{$i}+$revCount{$i};print qq[$i $fwdCount{$i} $revCount{$i}\n];
         if( $fwdCount{$i}+$revCount{$i} > $maxVal )
         {
             $maxPos = $i;
@@ -401,7 +402,18 @@ sub getCandidateBreakPointsDirVote
             push( @maxPoss, $i );
         }
     }
+=cut
+    my $fwdmax=0;my$revmax=0;my @fwdmaxposs;my @revmaxposs;
+    for(my $i=$start;$i<$end;$i++)
+    {
+        if($fwdCount{$i}>$fwdmax){$fwdmax=$fwdCount{$i};@fwdmaxposs=();push(@fwdmaxposs,$i);}elsif($fwdCount{$i}==$fwdmax){push(@fwdmaxposs,$i);}
+        if($revCount{$i}>$revmax){$revmax=$revCount{$i};@revmaxposs=();push(@revmaxposs,$i);}elsif($revCount{$i}==$revmax){push(@revmaxposs,$i);}
+    }
 
+    my $lower=$fwdmaxposs[0]<$revmaxposs[0]?$fwdmaxposs[0]:$revmaxposs[0];
+    my $upper=$fwdmaxposs[scalar(@fwdmaxposs)-1]>$revmaxposs[scalar(@revmaxposs)-1]?$fwdmaxposs[scalar(@fwdmaxposs)-1]:$revmaxposs[scalar(@revmaxposs)-1];
+    my @maxPoss = ($lower, $upper);
+foreach my $pos(@maxPoss){print qq[M: $pos\n];}    
     return undef if( ! @maxPoss );
     if( scalar(@maxPoss)==1){return [$maxPoss[0]];}
     else
