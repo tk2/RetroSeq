@@ -290,13 +290,14 @@ sub testBreakPoint
 
 sub getCandidateBreakPointsDirVote
 {
-    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 5;
+    die qq[ERROR: Incorrect number of arguments supplied: ].scalar(@_) unless @_ == 6;
     
     my $chr = shift;
     my $start = shift;
     my $end = shift;
 	my @bams = @{ $_[ 0 ] };shift;
     my $minQ = shift;
+	my $soft = shift; #1 or 0. use soft clips or not
     
     if( $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
     
@@ -331,9 +332,13 @@ sub getCandidateBreakPointsDirVote
         if( ( $flag & $$BAMFLAGS{'paired_tech'} ) && !( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #fwd supporting read
         {
             my $endPos = getSAMendpos($samL[3],$samL[5]);
-            if( $samL[5]=~/[0-9]+S$/)
+            if( $soft == 1 && $samL[5]=~/([0-9]+)S$/) #check the quality of the clipped bases is >Q20
             {
-                if( defined( $fwdCount{$endPos} ) ){$fwdCount{$endPos}+=2;}else{$fwdCount{$endPos}=2;}
+                my $clipped=$1;my $qualities=substr($samL[10],$clipped);
+                if(isHighQual($qualities))
+                {
+                    if( defined( $fwdCount{$endPos} ) ){$fwdCount{$endPos}+=2;}else{$fwdCount{$endPos}=2;}
+                }
             }
             elsif( !( $flag & $$BAMFLAGS{'read_paired'} ) ) # not paired correctly
             {
@@ -344,9 +349,13 @@ sub getCandidateBreakPointsDirVote
         elsif( ( $flag & $$BAMFLAGS{'paired_tech'} ) && ( $flag & $$BAMFLAGS{ 'reverse_strand' } ) ) #rev supporting read
         {
             my $endPos = getSAMendpos($samL[3],$samL[5]);
-            if( $samL[5]=~/^[0-9]+S/ )
+            if( $soft == 1 && $samL[5]=~/^([0-9]+)S/ )
             {
-                if( defined( $revCount{$samL[ 3 ]} ) ){$revCount{$samL[ 3 ]}+=2;}else{$revCount{$samL[ 3 ]}=2;}
+                my $clipped=$1;my $qualities=substr($samL[10],0,$clipped);
+                if(isHighQual($qualities))
+                {
+                    if( defined( $revCount{$samL[ 3 ]} ) ){$revCount{$samL[ 3 ]}+=2;}else{$revCount{$samL[ 3 ]}=2;}
+                }
 			}
             elsif( !( $flag & $$BAMFLAGS{'read_paired'} ) ) # not paired correctly
             {
@@ -405,7 +414,7 @@ sub getCandidateBreakPointsDirVote
 =cut
     my $fwdmax=0;my$revmax=0;my @fwdmaxposs;my @revmaxposs;
     for(my $i=$start;$i<$end;$i++)
-    {
+    {print qq[C: $i $fwdCount{$i} $revCount{$i}\n];
         if($fwdCount{$i}>$fwdmax){$fwdmax=$fwdCount{$i};@fwdmaxposs=();push(@fwdmaxposs,$i);}elsif($fwdCount{$i}==$fwdmax){push(@fwdmaxposs,$i);}
         if($revCount{$i}>$revmax){$revmax=$revCount{$i};@revmaxposs=();push(@revmaxposs,$i);}elsif($revCount{$i}==$revmax){push(@revmaxposs,$i);}
     }
@@ -915,6 +924,23 @@ sub getSAMendpos
         if( $entry=~/M$/){$endPos+=substr($entry,0,length($entry)-1);}
     }
     return $endPos;
+}
+
+=pod
+return boolean if high quality base qualities
+Input: string of phred ascii base quals
+=cut
+sub isHighQual
+{
+	my $quals = shift;
+
+	my @s=split(//,$quals);my $sum=0;
+    for(my $i=0;$i<@s;$i++)
+    {
+        $sum+=ord($s[$i]) - 33;
+    }
+	my $avg=$sum/scalar(@s);
+	return $avg>=20?1:undef;
 }
 
 sub _removeDups

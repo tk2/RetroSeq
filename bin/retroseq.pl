@@ -54,7 +54,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $orientate, $ignoreRGsFofn, $callNovel, $refTEs, $excludeRegionsDis, $doAlign, $help);
+my ($discover, $call, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $orientate, $ignoreRGsFofn, $callNovel, $refTEs, $excludeRegionsDis, $doAlign, $incsoftclips, $help);
 
 GetOptions
 (
@@ -85,6 +85,7 @@ GetOptions
     'refTEs=s'      =>  \$refTEs,
     'exd=s'         =>  \$excludeRegionsDis,
     'align'         =>  \$doAlign,
+	'soft'          =>  \$incsoftclips,
     'h|help'        =>  \$help,
 );
 
@@ -193,6 +194,7 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [ -
     [-reads         It is the minimum number of reads required to make a call. Default is 5.]
     [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30.]
     [-ignoreRGs     Single read group name OR a file of readgroups that should be ignored. Default is none.]
+    [-soft          Include soft clipped reads when calling. Recommended for BWA-MEM alignments only.]
     [-noclean       Do not remove intermediate output files. Default is to cleanup.]
     
 USAGE
@@ -223,7 +225,8 @@ USAGE
         open( my $tfh, $filterFile ) or die $!;
         while(my $line = <$tfh> ){chomp( $line );my @s = split( /\t/, $line );die qq[Cant find $s[0] filter file: $s[ 1 ]\n] unless -f $s[ 1 ];$filterBEDs{ $s[ 0 ] } = $s[ 1 ];}
     }
-    
+	my $incsoft=defined($incsoftclips)?1:0;
+
     #test for samtools
     RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16] );
     RetroSeq::Utilities::checkBinary( q[bcftools] );
@@ -243,13 +246,12 @@ USAGE
         close( $ifh );
     }
     else{if( ( -l $bam || -f $bam ) && ( -l $bam.qq[.bai] || -f $bam.qq[.bai] ) ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
-    
+
     my $sampleName = RetroSeq::Utilities::getBAMSampleName( \@bams );
     print qq[Calling sample $sampleName\n];
-    
 
     print qq[Beginning paired-end calling...\n];
-    _findInsertions( \@bams, $sampleName, $input, $ref, $output, $reads, $depth, $anchorQ, $region, $clean, \%filterBEDs, 1, $orientate, $ignoreRGsFofn, $callNovel );
+    _findInsertions( \@bams, $sampleName, $input, $ref, $output, $reads, $depth, $anchorQ, $region, $clean, \%filterBEDs, 1, $orientate, $ignoreRGsFofn, $callNovel, $incsoft );
 	exit;
 }
 else
@@ -542,6 +544,7 @@ sub _findInsertions
     my $orientate = shift;
     my $ignoreRGs = shift;
     my $novel = shift;
+	my $incsoft = shift;
     
     my @files;
     if( -f $input )
@@ -691,7 +694,7 @@ sub _findInsertions
                     my $homCalls = qq[$$.raw_calls.3.$currentType.hom.bed];
                     my $hetCalls = qq[$$.raw_calls.3.$currentType.het.bed];
                     
-                    _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
+                    _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads, $incsoft );
                     
                     #remove close duplicated calls
                     my $rmdupHomCalls = qq[$$.raw_calls.3.$currentType.hom.rmdup.bed];
@@ -877,7 +880,7 @@ reads either side
 =cut
 sub _filterCallsBedMinima
 {
-    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 11;
+    die qq[Incorrect number of parameters: ].scalar(@_) unless @_ == 12;
     
     my $bedin = shift;
 	my @bams = @{ $_[ 0 ] };shift;
@@ -890,6 +893,7 @@ sub _filterCallsBedMinima
 	my $bedoutHets = shift;
 	my $ignoreRGsFormatted = shift;
 	my $minReads = shift;
+	my $incsoft = shift;
 	
 	open( my $ifh, $bedin ) or die $!;
 	open( my $homsfh, qq[>$bedoutHoms] ) or die $!;
@@ -908,7 +912,7 @@ sub _filterCallsBedMinima
 	    
 	    my $start = $originalCallA[ 1 ];my $end = $originalCallA[ 2 ];my $chr = $originalCallA[ 0 ];
 	    
-	    my $t = RetroSeq::Utilities::getCandidateBreakPointsDirVote($originalCallA[0], $originalCallA[1], $originalCallA[2],\@bams,20 );
+	    my $t = RetroSeq::Utilities::getCandidateBreakPointsDirVote($originalCallA[0], $originalCallA[1], $originalCallA[2],\@bams, 20, $incsoft );
 	    if( ! $t ){warn qq[Failed to get candidate breakpoints for call $originalCall\n];next;}
 	    my $breakpoint = $t->[ 0 ];
 	    
