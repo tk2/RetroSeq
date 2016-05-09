@@ -393,28 +393,9 @@ sub getCandidateBreakPointsDirVote
     }
     
     #now find the position where the sum of the two counts maximises
-=pod
-    my $maxPos = $start;my @maxPoss;my $maxVal = $fwdCount{$start}+$revCount{$start};
-    
-    for(my $i=$start;$i<$end;$i++)
-    {
-        my $sum = $fwdCount{$i}+$revCount{$i};print qq[$i $fwdCount{$i} $revCount{$i}\n];
-        if( $fwdCount{$i}+$revCount{$i} > $maxVal )
-        {
-            $maxPos = $i;
-            @maxPoss = ();
-            push( @maxPoss, $i );
-            $maxVal = $fwdCount{$i}+$revCount{$i};
-        }
-        elsif( $fwdCount{$i}+$revCount{$i} == $maxVal )
-        {
-            push( @maxPoss, $i );
-        }
-    }
-=cut
     my $fwdmax=0;my$revmax=0;my @fwdmaxposs;my @revmaxposs;
     for(my $i=$start;$i<$end;$i++)
-    {print qq[C: $i $fwdCount{$i} $revCount{$i}\n];
+    {
         if($fwdCount{$i}>$fwdmax){$fwdmax=$fwdCount{$i};@fwdmaxposs=();push(@fwdmaxposs,$i);}elsif($fwdCount{$i}==$fwdmax){push(@fwdmaxposs,$i);}
         if($revCount{$i}>$revmax){$revmax=$revCount{$i};@revmaxposs=();push(@revmaxposs,$i);}elsif($revCount{$i}==$revmax){push(@revmaxposs,$i);}
     }
@@ -422,7 +403,7 @@ sub getCandidateBreakPointsDirVote
     my $lower=$fwdmaxposs[0]<$revmaxposs[0]?$fwdmaxposs[0]:$revmaxposs[0];
     my $upper=$fwdmaxposs[scalar(@fwdmaxposs)-1]>$revmaxposs[scalar(@revmaxposs)-1]?$fwdmaxposs[scalar(@fwdmaxposs)-1]:$revmaxposs[scalar(@revmaxposs)-1];
     my @maxPoss = ($lower, $upper);
-foreach my $pos(@maxPoss){print qq[M: $pos\n];}    
+
     return undef if( ! @maxPoss );
     if( scalar(@maxPoss)==1){return [$maxPoss[0]];}
     else

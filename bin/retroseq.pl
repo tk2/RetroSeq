@@ -194,7 +194,7 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [ -
     [-reads         It is the minimum number of reads required to make a call. Default is 5.]
     [-q             Minimum mapping quality for a read mate that anchors the insertion call. Default is 30.]
     [-ignoreRGs     Single read group name OR a file of readgroups that should be ignored. Default is none.]
-    [-soft          Include soft clipped reads when calling. Recommended for BWA-MEM alignments only.]
+    [-soft          Include soft clipped reads when calling. HIGHLY RECOMMENDED for BWA-MEM alignments.]
     [-noclean       Do not remove intermediate output files. Default is to cleanup.]
     
 USAGE
@@ -801,7 +801,7 @@ sub _findInsertions
             my $homCalls = qq[$$.raw_calls.3.hybrid.hom.bed];
             my $hetCalls = qq[$$.raw_calls.3.hybrid.het.bed];
           
-            _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads );
+            _filterCallsBedMinima( $rawTECalls2, \@bams, 10, $minQ, $ref, $raw_candidates, $hets, $homCalls, $hetCalls, $ignoreRGsFormatted, $minReads, $incsoft );
             
             #remove close duplicated calls
             my $rmdupHomCalls = qq[$$.raw_calls.3.hybrid.hom.rmdup.bed];
