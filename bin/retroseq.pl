@@ -572,10 +572,11 @@ sub _findInsertions
     my ($chr, $start, $end) = (undef, undef, undef);
     if( defined( $region ) )
     {
-        if( $region =~ /^([A-Za-z0-9]+):([0-9]+)-([0-9]+)$/ )
+        if( $region =~ /^([A-Za-z0-9]+):([0-9,]+)-([0-9,]+)$/ )
         {
             $chr = $1;$start=$2;$end=$3;
-            print qq[Restricting calling to region: $region\n];
+            print qq[Restricting calling to region: $chr:$start-$end\n];
+            die qq[Start co-ordinate is larger than end co-ordinate] if($start>$end);
         }
         else{$chr = $region;print qq[Restricting calling to Chr: $chr\n];}
     }
@@ -926,6 +927,8 @@ sub _filterCallsBedMinima
         my $call = $result->[1];
         my $ratio = $result->[2];
         my $spanningRPs = $result->[4];
+        my $lhsSoft = $result->[5];
+        my $rhsSoft = $result->[6];
         
         if( $flag == $RetroSeq::Utilities::INV_BREAKPOINT )
         {
@@ -935,7 +938,7 @@ sub _filterCallsBedMinima
         {
             #note to self - disabled the hom/het decision code (needs to be rewritten)
             print qq[Breakpoint score: $ratio Flag: $flag\n];
-            print $homsfh $call.qq[\t$flag\t$spanningRPs\n];
+            print $homsfh $call.qq[\t$flag\t$spanningRPs\t$lhsSoft\t$rhsSoft\n];
         }
         else{print qq[Discarding: $call : $flag\n];}
 	}
@@ -1098,6 +1101,8 @@ sub _outputCalls
                 my $ci2 = $s[ 2 ] - $pos;
                 my $flag = $s[ 5 ];
                 my $spanning = $s[ 6 ];
+                my $lhsSoft = $s[ 7 ];
+                my $rhsSoft = $s[ 8 ];
                 
                 print $bfh qq[$s[0]\t$pos\t].($pos+1).qq[\t$type==$sample\t$s[4]\tNA\n];
                 
@@ -1109,12 +1114,14 @@ sub _outputCalls
                 $out{REF}    = $refbase;
                 $out{QUAL}   = $s[ 4 ];
                 $out{INFO} = { SVTYPE=>'INS', NOT_VALIDATED=>undef, MEINFO=>qq[$s[3],$s[1],$s[2],NA] };
-                $out{FORMAT} = ['GT', 'GQ', 'FL', 'SP'];
+                $out{FORMAT} = ['GT', 'GQ', 'FL', 'SP', 'CLIP5' , 'CLIP3'];
                 
                 $out{gtypes}{$sample}{GT} = qq[<INS:ME>/<INS:ME>];
                 $out{gtypes}{$sample}{GQ} = qq[$s[4]];
                 $out{gtypes}{$sample}{FL} = $flag;
                 $out{gtypes}{$sample}{SP} = $spanning;
+                $out{gtypes}{$sample}{CLIP5} = $lhsSoft;
+                $out{gtypes}{$sample}{CLIP3} = $rhsSoft;
                 
                 $vcf_out->format_genotype_strings(\%out);
                 print $vfh $vcf_out->format_line(\%out);

@@ -150,7 +150,7 @@ sub testBreakPoint
     #test to see if lots of rp's either side
     my $lhsFwdBlue = 0; my $lhsRevBlue = 0; my $rhsFwdBlue = 0; my $rhsRevBlue = 0;
     my $lhsFwdGreen = 0; my $lhsRevGreen = 0; my $rhsFwdGreen = 0; my $rhsRevGreen = 0;
-    my $softClipSupporting = 0;
+    my $lhsSoftClipping=0; my $rhsSoftClipping = 0;
 	
     #store the last blue read before the b/point, and first blue read after the b/point
 	my $lastSupportingPos = 0;my $firstSupportingPos = 100000000000;
@@ -175,7 +175,7 @@ sub testBreakPoint
 	my $cmd = $cmdpre.($refPos-$lhsWindow).qq[-].($refPos+$rhsWindow).qq[ | ].(defined($ignoreRGs) ? qq[ grep -v -f $ignoreRGs |] : qq[]);
 	open( my $tfh, $cmd ) or die $!;
 	my $totalLFwd = 0; my $totalRRev = 0;my $totalSup = 0;
-	my @lhsFwd;my @lhsRev;my @rhsFwd;my @rhsRev;my @soft;
+	my @lhsFwd;my @lhsRev;my @rhsFwd;my @rhsRev;my $lhsSoft=0; my $rhsSoft=0;
 	my $totalSpanningRPs = 0;my %spanningFrags;
 	while( my $sam = <$tfh> )
 	{
@@ -187,12 +187,12 @@ sub testBreakPoint
 	    {
 			if( ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) )  #rev strand
             {
-				if( $s[ 5 ] =~ /^[0-9]{2}+S/ ){$rhsRevBlue++;push(@rhsRev, $s[0]);}
+				if( $s[ 5 ] =~ /^[0-9]{2}+S/ ){$rhsSoft++;}
                 elsif( $s[ 3 ] < $refPos ){$lhsRevBlue++;push(@lhsRev, $s[0]);}else{$rhsRevBlue++;$firstSupportingPos = $s[ 3 ] if( $s[ 3 ] < $firstSupportingPos );push(@rhsRev, $s[0]);}
             }
             else
             {
-				if( $s[ 5 ] =~ /[0-9]{2}+S$/ ){$lhsFwdBlue++;push(@lhsFwd, $s[0]);}
+				if( $s[ 5 ] =~ /[0-9]{2}+S$/ ){$lhsSoft++;}
                 elsif( $s[ 3 ] < $refPos ){$lhsFwdBlue++;$lastSupportingPos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastSupportingPos );push(@lhsFwd, $s[0]);}else{$rhsFwdBlue++;push(@rhsFwd, $s[0]);}
             }
         }
@@ -201,12 +201,12 @@ sub testBreakPoint
         {
             if( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) #rev strand
             {
-				if( $s[ 5 ] =~ /^[0-9]{2}+S/ ){$rhsRevGreen++;push(@rhsRev, $s[0]);}
+				if( $s[ 5 ] =~ /^[0-9]{2}+S/ ){$rhsSoft++;}
                 elsif( $s[ 3 ] < $refPos ){$lhsRevGreen++;push(@lhsRev, $s[0]);}else{$rhsRevGreen++;$firstSupportingPos = $s[ 3 ] if( $s[ 3 ] < $firstSupportingPos );push(@rhsRev, $s[0]);}
             }
             else
             {
-				if( $s[ 5 ] =~ /[0-9]{2}+S$/ ){$lhsFwdGreen++;push(@lhsFwd, $s[0]);}
+				if( $s[ 5 ] =~ /[0-9]{2}+S$/ ){$lhsSoft++;}
                 elsif( $s[ 3 ] < $refPos ){$lhsFwdGreen++;$lastSupportingPos = $s[ 3 ] + length( $s[ 9 ] ) if( ( $s[ 3 ] + length( $s[ 9 ] ) ) > $lastSupportingPos );push(@lhsFwd, $s[0]);}else{$rhsFwdGreen++;push(@rhsFwd, $s[0]);}
             }
         }
@@ -236,7 +236,7 @@ sub testBreakPoint
 
     #if it appears to be an inversion breakpoint
     my $lhsRev = $lhsRevGreen + $lhsRevBlue;my $rhsRev = $rhsRevGreen + $rhsRevBlue;my $lhsFwd = $lhsFwdGreen + $lhsFwdBlue;my $rhsFwd = $rhsFwdGreen + $rhsFwdBlue;
-    my $totalSupporting = ( $lhsFwd + $rhsRev + $softClipSupporting );
+    my $totalSupporting = ( $lhsFwd + $rhsRev + $rhsSoft + $lhsSoft );
     my $callString = qq[$chr\t$refPos\t].($refPos+1).qq[\t$originalCallA[ 3 ]\t$totalSupporting];
     print qq[No same orientation: $numSameOrientation\n];
     if( $numSameOrientation > $totalSupporting )
@@ -258,33 +258,33 @@ sub testBreakPoint
         
         if( $totalSupporting < $minReads )
         {
-            return [$NOT_ENOUGH_READS_CLUSTER, $callString, 0, $totalSupporting, $totalSpanningRPs];
+            return [$NOT_ENOUGH_READS_CLUSTER, $callString, 0, $totalSupporting, $totalSpanningRPs, $lhsSoft, $rhsSoft];
         }
         elsif( $lhsFwd < ($minReads/2) || $rhsRev < ($minReads/2) )
         {
             print qq[Code: $NOT_ENOUGH_READS_FLANKS\t$lhsFwd\t$rhsRev\n];
-            return [$NOT_ENOUGH_READS_FLANKS, $callString, 0, $totalSupporting, $totalSpanningRPs];
+            return [$NOT_ENOUGH_READS_FLANKS, $callString, 0, $totalSupporting, $totalSpanningRPs, $lhsSoft, $rhsSoft];
         }
         elsif( ! $lhsRatioPass && ! $rhsRatioPass )
         {
-            return [$NEITHER_SIDE_RATIO_PASSES, $callString, 0, $totalSupporting, $totalSpanningRPs];
+            return [$NEITHER_SIDE_RATIO_PASSES, $callString, 0, $totalSupporting, $totalSpanningRPs, $lhsSoft, $rhsSoft];
         }
         elsif( ! ( $lhsRatioPass && $rhsRatioPass ) )
         {
-            return [$ONE_SIDED_RATIO_PASSES, $callString, 0, $totalSupporting, $totalSpanningRPs];
+            return [$ONE_SIDED_RATIO_PASSES, $callString, 0, $totalSupporting, $totalSpanningRPs, $lhsSoft, $rhsSoft];
         }
         elsif( $dist > 220 )
         {
             print qq[Distance between 5' and 3' clusters: $dist\n];
-            return [$DISTANCE_THRESHOLD, $callString, 0, $totalSupporting, $totalSpanningRPs ];
+            return [$DISTANCE_THRESHOLD, $callString, 0, $totalSupporting, $totalSpanningRPs, $lhsSoft, $rhsSoft];
         }
         else
         {
             my $ratio = ( $lhsRev + $rhsFwd ) / ( $lhsFwd + $rhsRev );
-            return [$PASS, $callString, $ratio, $totalSupporting, $totalSpanningRPs];
+            return [$PASS, $callString, $ratio, $totalSupporting, $totalSpanningRPs, $lhsSoft, $rhsSoft];
         }
         
-        return [$UNKNOWN_FAIL, $callString, 10000, $totalSpanningRPs];
+        return [$UNKNOWN_FAIL, $callString, 10000, $totalSpanningRPs, $lhsSoft, $rhsSoft];
     }
 }
 
@@ -820,6 +820,12 @@ sub getVcfHeader
 
     ##FORMAT=<ID=SP,Number=1,Type=Float,Description="Number of read pairs spanning breakpoint, useful for estimation of size of insertion">
     $vcf_out->add_header_line( {key=>'FORMAT', ID=>'SP', Number=>'1', Type=>'Float', Description=>'Number of correctly mapped read pairs spanning breakpoint, useful for estimation of size of insertion'} );
+    
+    ##FORMAT=<ID=CLIP3,Number=1,Type=Float,Description="Number of soft clipped reads downstream of the breakpoint">
+    $vcf_out->add_header_line( {key=>'FORMAT', ID=>'CLIP3', Number=>'1', Type=>'Float', Description=>'Number of soft clipped reads downstream of the breakpoint'} );
+    
+    ##FORMAT=<ID=CLIP5,Number=1,Type=Float,Description="Number of soft clipped reads uptream of the breakpoint">
+    $vcf_out->add_header_line( {key=>'FORMAT', ID=>'CLIP5', Number=>'1', Type=>'Float', Description=>'Number of soft clipped reads upstream of the breakpoint'} );
     
     ##FORMAT=<ID=GQ,Number=1,Type=Float,Description="Genotype quality">
     $vcf_out->add_header_line( {key=>'FORMAT', ID=>'FL', Number=>'1', Type=>'Integer', Description=>'Call Status - for reference calls a flag to say if the call failed a particular filter. Filters are ordered by priority in calling (higher number indicates closer to being called). 1 - depth too high in region, 2 - not enough reads in cluster, 3 - not enough total flanking reads, 4 - not enough inconsistently mapped reads, 5 - neither side passes ratio test, 6 - one side passes ratio test, 7 - distance too large at breakpoint, 8 - PASSED all filters'} );
