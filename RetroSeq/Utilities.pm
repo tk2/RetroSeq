@@ -34,7 +34,7 @@ my $BAMFLAGS =
     'mate_reverse'   => 0x0020,
     '1st_in_pair'    => 0x0040,
     '2nd_in_pair'    => 0x0080,
-    'secondary'    => 0x0100,
+    'secondary'    	 => 0x0100,
     'failed_qc'      => 0x0200,
     'duplicate'      => 0x0400,
 };
@@ -211,6 +211,14 @@ sub testBreakPoint
             }
         }
         
+        #          read is mapped                      mate is mapped                                 paired correctly
+        if( ! ($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} ) && ( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) )
+        {
+            #look for soft clipped bases and include them in the count of soft clipped reads
+            if( $s[ 5 ] =~ /[0-9]{2}+S$/ ){$lhsSoft++;}
+            if( $s[ 5 ] =~ /^[0-9]{2}+S/ ){$rhsSoft++;}
+        }
+
         #       read is mapped                                  mate is mapped                           not paired correctly                  ins size < 50k               both mates are mapped to same strand
         if( ! ($s[ 1 ] & $$BAMFLAGS{'unmapped'} ) && !($s[ 1 ] & $$BAMFLAGS{'mate_unmapped'} ) && ! ( $s[ 1 ] & $$BAMFLAGS{'read_paired'} ) && abs($s[ 8 ]) < 50000 && ( $s[ 1 ] & $$BAMFLAGS{'reverse_strand'} ) == ( $s[ 1 ] & $$BAMFLAGS{'mate_reverse'} ) && ( $s[ 2 ] eq $s[ 6 ] || $s[ 6 ] eq '=') ) #and both mates mapped to the same chr
         {
@@ -859,7 +867,6 @@ sub calculateCigarBreakpoint
 =pod
 return 1 - unmapped mate
 return 2 - mate mapped but incorrectly
-return 3 - soft clipped read supporting the breakpoint
 =cut
 sub isSupportingClusterRead
 {
@@ -876,8 +883,8 @@ sub isSupportingClusterRead
     
     return 0 if( !( $flag & $$BAMFLAGS{'paired_tech'} ) );
     
-    #            read is not a duplicate        map quality is >= minimum
-    if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $mapQ >= $minQual )
+    #            read is not a duplicate        map quality is >= minimum    no soft clipping(full length)              is not a secondary match
+    if( ! ( $flag & $$BAMFLAGS{'duplicate'} ) && $mapQ >= $minQual && $cigar !~ /[0-9]+S/ && $cigar !~ /[0-9]+H/ && ! ( $flag & $$BAMFLAGS{'secondary'} ) )
     {
         #           read is mapped                       mate is unmapped
         if( ! ( $flag & $$BAMFLAGS{'unmapped'} ) && ( $flag & $$BAMFLAGS{'mate_unmapped'} ) )

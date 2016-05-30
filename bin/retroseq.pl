@@ -35,6 +35,7 @@ my $DEFAULT_READS = 10;
 my $MAX_READ_GAP_IN_REGION = 120;
 my $DEFAULT_MIN_CLUSTER_READS = 2;
 my $DEFAULT_MAX_CLUSTER_DIST = 4000;
+my $DEFAULT_FEATURE_OVERLAP = 0.8;
 
 my $HEADER = qq[#retroseq v:].$RetroSeq::Utilities::VERSION;
 my $FOOTER = qq[#END_CANDIDATES];
@@ -54,7 +55,7 @@ my $BAMFLAGS =
     'duplicate'      => 0x0400,
 };
 
-my ($discover, $call, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $orientate, $ignoreRGsFofn, $callNovel, $refTEs, $excludeRegionsDis, $doAlign, $incsoftclips, $help);
+my ($discover, $call, $bam, $bams, $ref, $eRefFofn, $length, $id, $output, $anchorQ, $region, $input, $reads, $depth, $noclean, $tmpdir, $readgroups, $filterFile, $orientate, $ignoreRGsFofn, $callNovel, $refTEs, $excludeRegionsDis, $doAlign, $incsoftclips, $fractionOverlap, $help);
 
 GetOptions
 (
@@ -86,6 +87,7 @@ GetOptions
     'exd=s'         =>  \$excludeRegionsDis,
     'align'         =>  \$doAlign,
 	'soft'          =>  \$incsoftclips,
+	'fetOverlap'	=>	\$fractionOverlap,
     'h|help'        =>  \$help,
 );
 
@@ -121,13 +123,14 @@ Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-i
     -output     Output file to store candidate supporting reads (required for calling step)
     [-refTEs    Tab file with TE type and BED file of reference elements. These will be used to quickly assign discordant reads the TE types and avoid alignment. Using this will speed up discovery dramatically.]
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
-    [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is 30. Parameter is optional.]
-    [-id        Minimum percent ID for a match of a read to the transposon references. Default is 90.]
+    [-q         Minimum mapping quality for a read mate that anchors the insertion call. Default is $DEFAULT_ANCHORQ. Parameter is optional.]
+    [-id        Minimum percent ID for a match of a read to the transposon references. Default is $DEFAULT_ID.]
     [-rgs       Comma separated list of readgroups to operate on. Default is all.]
     [-exd       Fofn of BED files of regions where discordant mates falling into will be excluded e.g. simple repeats, centromeres, telomeres]
     [-align     Do the computational expensive exonerate PE discordant mate alignment step]
     [-eref      Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta). Required when the -align option is used.]
-    [-len       Minimum length of a hit to the transposon references when using the -align option. Default is 36bp.]
+    [-len       Minimum length of a hit to the transposon references when using the -align option. Default is $DEFAULT_LENGTH.]
+    [-overlap   Fraction of read alignment that must overlap with ref TE elements to be considered. Default is $DEFAULT_FEATURE_OVERLAP.]
     
 USAGE
     
@@ -142,7 +145,8 @@ USAGE
         foreach my $type ( keys( %{$erefs} ) )
         {
             my $file = $$erefs{$type};
-			croak qq[Cant find transposon reference file: $file\n] if( ! -f $$erefs{$type} );
+            #Test if can open the file
+            open(my $iifh,$file)or croak qq[Cant find $type transposon reference file: $file\nError $!\n];close($iifh);
         }
         if( ! $doAlign ){print qq[Forcing -align option to be switched on as transposon sequence files were provided\n];$doAlign = 1;}
     }
@@ -155,7 +159,8 @@ USAGE
         foreach my $type ( keys( %{$refTEsF} ) )
         {
 			my $file = $$refTEsF{ $type };
-			croak qq[Cant find $type reference TEs file: $file\n] if( ! -f $$refTEsF{$type} );
+            #Test if can open the file
+            open(my $iifh,$file)or croak qq[Cant find $type reference TEs file: $file\nError $!\n];close($iifh);
         }
     }
     
@@ -163,7 +168,8 @@ USAGE
     $id = defined( $id ) && $id < 101 && $id > 0 ? $id : $DEFAULT_ID;
     $length = defined( $length ) && $length > 25 ? $length : $DEFAULT_LENGTH;
     my $clean = defined( $noclean ) ? 0 : 1;
-        
+    $fractionOverlap = defined( $fractionOverlap ) && $fractionOverlap <= 1.0 && $fractionOverlap > 0 ? $fractionOverlap : $DEFAULT_FEATURE_OVERLAP;
+    
     if( $readgroups && length( $readgroups ) > 0 )
     {
         my @s = split( /,/, $readgroups );foreach my $rg ( @s ){if( $rg !~ /[A-Za-z0-9]|\.|-|_+/ ){croak qq[Invalid readgroup: $rg\n];}}
@@ -177,7 +183,7 @@ USAGE
     RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] ) if( $doAlign );
     RetroSeq::Utilities::checkBinary( q[bedtools] );
     
-    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $refTEsF, $excludeRegionsDis, $doAlign, $clean );
+    _findCandidates( $bam, $erefs, $id, $length, $anchorQ, $output, $readgroups, $refTEsF, $excludeRegionsDis, $doAlign, $fractionOverlap, $clean );
 }
 elsif( $call )
 {
@@ -274,6 +280,7 @@ sub _findCandidates
     my $refTEsF = shift;
     my $excludeRegionsDis = shift;
     my $doAlign = shift;
+    my $fractionOverlap = shift;
     my $clean = shift;
     
     my $readgroupsFile = qq[$$.readgroups];
@@ -392,7 +399,7 @@ sub _findCandidates
         {
             my $file = $$refTEsF{ $type };
             print qq[Screening for hits to: $type\n];
-            system( qq[bedtools intersect -a $discordantMatesBed -b $file -u | awk -F"\t" '{print \$4,\$5}' > $$.$type.mates.bed] ) == 0 or die qq[Failed to run bedtools intersect];
+            system( qq[bedtools intersect -a $discordantMatesBed -b $file -u -f $fractionOverlap | awk -F"\t" '{print \$4,\$5}' > $$.$type.mates.bed] ) == 0 or die qq[Failed to run bedtools intersect];
             
             #print the mates (i.e. the anchors) of these reads into the discovery output file
             #first load up the readnames
