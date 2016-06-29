@@ -818,7 +818,7 @@ sub getVcfHeader
     $vcf_out->add_header_line( {key=>'INFO',ID=>'MEINFO',Number=>'4',Type=>'String', Description=>'Mobile element info of the form NAME,START,END,POLARITY'} );
     
     ##ALT=<ID=INS:ME,Description="Insertion of a mobile element">
-    $vcf_out->add_header_line( {key=>'ALT', ID=>'INS:ME', Type=>'String', Description=>"Insertion of a mobile element"} );
+    $vcf_out->add_header_line( {key=>'ALT', ID=>'INS:ME',Description=>"Insertion of a mobile element"} );
     
     ##FORMAT=<ID=GT,Number=1,Type=Integer,Description="Genotype">
     $vcf_out->add_header_line({key=>'FORMAT',ID=>'GT',Number=>'1',Type=>'String',Description=>"Genotype"});
