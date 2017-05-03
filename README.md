@@ -10,7 +10,7 @@ RetroSeq is a two phase process, the first being the read pair discovery phase w
 
 Dependencies
 -------------
-RetroSeq makes use of the [bedtools package](http://code.google.com/p/bedtools/), [samtools](https://github.com/samtools/samtools), [Exonerate] (http://www.ebi.ac.uk/~guy/exonerate/), and various common unix tools such as sort and grep. RetroSeq will check if these are installed and available in the default path.
+RetroSeq makes use of the [bedtools package](http://code.google.com/p/bedtools/), [samtools](https://github.com/samtools/samtools), [Exonerate](http://www.ebi.ac.uk/about/vertebrate-genomics/software/exonerate), and various common unix tools such as sort and grep. RetroSeq will check if these are installed and available in the default path.
 
 NOTE: RetroSeq has been primarily tested on BAM files produced by [MAQ](http://maq.sourceforge.net/) and [BWA](http://bio-bwa.sourceforge.net/). There is no guarantee it will work on BAM files from other aligners.
 
