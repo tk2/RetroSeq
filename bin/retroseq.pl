@@ -234,7 +234,6 @@ USAGE
 	my $incsoft=defined($incsoftclips)?1:0;
 
     #test for samtools
-    RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16] );
     RetroSeq::Utilities::checkBinary( q[bcftools] );
     RetroSeq::Utilities::checkBinary( q[bedtools] );
     
