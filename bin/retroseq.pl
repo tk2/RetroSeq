@@ -179,7 +179,6 @@ USAGE
     print qq[\nMin anchor quality: $anchorQ\nMin percent identity: $id\nMin length for hit: $length\n\n];
     
     #test for samtools
-    RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16], qq[0.1.19] );
     RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] ) if( $doAlign );
     RetroSeq::Utilities::checkBinary( q[bedtools] );
     
