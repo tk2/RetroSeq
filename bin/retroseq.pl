@@ -244,12 +244,12 @@ USAGE
         while(my $file = <$ifh> )
         {
             chomp( $file );
-            if( ( -l $file || -f $file ) && ( -l $file.qq[.bai] || -f $file.qq[.bai] || -f $file.qq[.crai]) || -f $file.qq[cram.crai] || -l $file.qq[.crai] || -l $file.qq[cram.crai]) ){push(@bams, $file);}else{die qq[Cant find BAM input file or BAM index file: $file\n];}
+            if( ( -l $file || -f $file ) && ( -l $file.qq[.bai] || -f $file.qq[.bai] || -f $file.qq[.crai] || -f $file.qq[cram.crai] || -l $file.qq[.crai] || -l $file.qq[cram.crai]) ){push(@bams, $file);}else{die qq[Cant find BAM input file or BAM index file: $file\n];}
         }
         print qq[Found ].scalar(@bams).qq[ BAM files\n\n];
         close( $ifh );
     }
-    else{if( ( -l $bam || -f $bam ) && ( -l $bam.qq[.bai] || -f $bam.qq[.bai] || -f $bam.qq[.crai]  || -f $file.qq[cram.crai] || -l $file.qq[.crai] || -l $file.qq[cram.crai]) ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
+    else{if( ( -l $bam || -f $bam ) && ( -l $bam.qq[.bai] || -f $bam.qq[.bai] || -f $bam.qq[.crai]  || -f $bam.qq[cram.crai] || -l $bam.qq[.crai] || -l $bam.qq[cram.crai]) ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
 
     my $sampleName = RetroSeq::Utilities::getBAMSampleName( \@bams );
     print qq[Calling sample $sampleName\n];
