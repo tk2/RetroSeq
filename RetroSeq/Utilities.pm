@@ -306,7 +306,9 @@ sub getCandidateBreakPointsDirVote
 	my @bams = @{ $_[ 0 ] };shift;
     my $minQ = shift;
 	my $soft = shift; #1 or 0. use soft clips or not
-    
+    #correct for negative values as start position (this happens in decoy chromosomes)
+    if( $start =~ /^-\d+$/ ){ $start="0"; }
+
     if( $start !~ /^\d+$/ || $end !~ /^\d+$/ ){die qq[ERROR: Invalid parameters passed to getCandidateBreakPointsDir: $chr $start $end\n];}
     
     my %fwdCount; #pos->read count
