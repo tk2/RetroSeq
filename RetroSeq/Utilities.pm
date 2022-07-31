@@ -164,8 +164,8 @@ sub testBreakPoint
         }else{die qq[Failed to extract region $chr:$refPos BAM];}
     }
     else
-    {
-        $cmdpre = qq[samtools view $bams[0] $chr:];
+    { 
+        $cmdpre = qq[samtools view --input-fmt-option required_fields=0x37F $bams[0] $chr:];
     }
     
     #compute the distance from the breakpoint to the last fwd read and the first rev read (and then add this to the read window buffer)
@@ -320,7 +320,7 @@ sub getCandidateBreakPointsDirVote
     {
         if( _mergeRegionBAMs( \@bams, $chr, $start, $end, qq[/tmp/$$.region.bam] ) )
         {
-            $cmd = qq[samtools view /tmp/$$.region.bam |];
+            $cmd = qq[samtools view --input-fmt-option required_fields=0x23B /tmp/$$.region.bam |];
         }else{die qq[Failed to extract region $chr:$start-$end BAM];}
     }
     else

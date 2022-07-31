@@ -305,7 +305,7 @@ sub _findCandidates
         
         #now go and get the reads from the bam (annoying have to traverse through the bam a second time - but required for reads where the mate is aligned distantly)
         #also dump out their mates as will need these later as anchors
-        open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
+        open( my $bfh, qq[samtools view --input-fmt-option required_fields=0x23F].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
         open( my $dfh, qq[>>$discordantMatesBed] ) or die $!;
         my $currentChr = '';
         my $readsFound = 0;
@@ -975,7 +975,7 @@ sub _getCandidateTEReadNames
     
     print qq[Opening BAM ($bam) and getting initial set of candidate mates....\n];
     
-    open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
+    open( my $bfh, qq[samtools view --input-fmt-option required_fields=0x3FF].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
     my $currentChr = '';
     while ( my $samLine = <$bfh> )
     {
