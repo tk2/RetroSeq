@@ -178,7 +178,8 @@ USAGE
     
     print qq[\nMin anchor quality: $anchorQ\nMin percent identity: $id\nMin length for hit: $length\n\n];
     
-    #test for samtools
+    #test for samtools 1.10 at least,since required_fields is supported by 1.9 and newer (CheckBinary has problems with comparing 1.09 with 1.15)
+    RetroSeq::Utilities::checkBinary( q[samtools], qq[1.10] );
     RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] ) if( $doAlign );
     RetroSeq::Utilities::checkBinary( q[bedtools] );
     
@@ -232,7 +233,8 @@ USAGE
     }
 	my $incsoft=defined($incsoftclips)?1:0;
 
-    #test for samtools
+    #test for samtools 1.10 at least,since required_fields is supported by 1.9 and newer (CheckBinary has problems with comparing 1.09 with 1.15)
+    RetroSeq::Utilities::checkBinary( q[samtools], qq[1.10] );
     RetroSeq::Utilities::checkBinary( q[bcftools] );
     RetroSeq::Utilities::checkBinary( q[bedtools] );
     
