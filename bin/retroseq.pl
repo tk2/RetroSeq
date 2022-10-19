@@ -103,8 +103,8 @@ MESSAGE
 my $USAGE = <<USAGE;
 Usage: $0 -<command> options
 
-            -discover       Takes a BAM and a set of reference TE (fasta) and calls candidate supporting read pairs (BED output)
-            -call           Takes multiple output of discovery stage and a BAM and outputs a VCF of TE calls
+            -discover       Takes a BAM or CRAM and a set of reference TE (fasta) and calls candidate supporting read pairs (BED output)
+            -call           Takes multiple output of discovery stage and a BAM or CRAM and outputs a VCF of TE calls
             
 NOTE: $0 requires samtools, bcftools, exonerate, unix sort, bedtools to be in the default path
 
@@ -119,7 +119,7 @@ if( $discover )
     ( $bam && $output ) or die <<USAGE;
 Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-id <int>] [-len <int> -noclean]
     
-    -bam        BAM file of paired reads mapped to reference genome
+    -bam        BAM or CRAM file of paired reads mapped to reference genome
     -output     Output file to store candidate supporting reads (required for calling step)
     [-refTEs    Tab file with TE type and BED file of reference elements. These will be used to quickly assign discordant reads the TE types and avoid alignment. Using this will speed up discovery dramatically.]
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
@@ -190,7 +190,7 @@ elsif( $call )
     ( $bam && $input && $ref && $output ) or die <<USAGE;
 Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [ -filter <BED file> -cleanup -reads <int> -depth <int>]
     
-    -bam            BAM file OR BAM fofn
+    -bam            BAM file OR CRAM file OR BAM fofn
     -input          Either a single output file from the PE discover stage OR a prefix of a set of files from discovery to be combined for calling OR a fofn of discovery stage output files
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
@@ -205,7 +205,7 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [ -
     
 USAGE
     
-    croak qq[Cant find BAM or BAM fofn: $bam] unless -f $bam || -l $bam;
+    croak qq[Cant find BAM or CRAM or BAM fofn: $bam] unless -f $bam || -l $bam;
     
     if( ! -f $input )
     {
