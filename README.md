@@ -2,7 +2,7 @@ RetroSeq
 ====================
 What is RetroSeq?
 -------
-RetroSeq is a tool for discovery and genotyping of transposable element variants (TEVs) (also known as mobile element insertions) from next-gen sequencing reads aligned to a reference genome in BAM format. The goal is to call TEVs that are not present in the reference genome but present in the sample that has been sequenced. It should be noted that RetroSeq can be used to locate any class of viral insertion in any species where whole-genome sequencing data with a suitable reference genome is available.
+RetroSeq is a tool for discovery and genotyping of transposable element variants (TEVs) (also known as mobile element insertions) from next-gen sequencing reads aligned to a reference genome in BAM or CRAM format. The goal is to call TEVs that are not present in the reference genome but present in the sample that has been sequenced. It should be noted that RetroSeq can be used to locate any class of viral insertion in any species where whole-genome sequencing data with a suitable reference genome is available.
 
 If you want to find if a transposable element that is present in the reference genome and not present in your sample (a deletion in structural variation terminology), then you should use a structural variation deletion caller such as [Breakdancer](http://gmt.genome.wustl.edu/breakdancer/current/).
 
@@ -18,11 +18,11 @@ Using RetroSeq
 ================
 1 Discovery Phase
 ------------------
-The goal here is to pass through the BAM and identify discordant read pairs that might support a TE insertion. You can either supply a tab delimited file specifying a set of TE types (e.g. Alu, LINE etc.) and the corresponding BED file of locations where these are in the reference genome (-refTEs parameter). Alternatively, you can provide a tab delimited file specifying a set of viral/TE types and the corresponding fasta file with a set of consensus sequences for these (-eref parameter).
+The goal here is to pass through the BAM (or CRAM) and identify discordant read pairs that might support a TE insertion. You can either supply a tab delimited file specifying a set of TE types (e.g. Alu, LINE etc.) and the corresponding BED file of locations where these are in the reference genome (-refTEs parameter). Alternatively, you can provide a tab delimited file specifying a set of viral/TE types and the corresponding fasta file with a set of consensus sequences for these (-eref parameter).
 
 Usage: retroseq.pl -discover -bam <string> -eref <string> -output <string> [-srmode] [-q <int>] [-id <int>] [-len <int> -noclean]
     
-    -bam        BAM file of paired reads mapped to reference genome
+    -bam        BAM or CRAM file of paired reads mapped to reference genome
     -output     Output file to store candidate supporting reads (required for calling step)
     [-eref      Tab file with list of transposon types and the corresponding fasta file of reference sequences (e.g. SINE   /home/me/refs/SINE.fasta). Required when the -align option is used.]
     [-refTEs    Tab file with TE type and BED file of reference elements. These will be used to quickly assign discordant reads the TE types and avoid alignment. Using this will speed up discovery dramatically.]
@@ -42,7 +42,7 @@ The calling phase takes one or more outputs from the discovery phase, clusters t
 
 Usage: retroseq.pl -call -bam <string> -input <string> -ref <string> -output <string> [-srinput <SR candidates file> -filter <BED file> -cleanup -reads <int> -depth <int> -hets]
     
-    -bam            BAM file OR BAM fofn
+    -bam            BAM file OR cram OR BAM fofn
     -input          Either a single output file from the PE discover stage OR a prefix of a set of files from discovery to be combined for calling OR a fofn of discovery stage output files
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
