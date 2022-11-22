@@ -1,0 +1,3 @@
+[feature] Added support for cram files. Requires samtools 1.10 and newer
+[speedup] decodes only parts of cram files used by RetroSeq Perl script
+[fix] Samtools can not extract regions with a negative start position. Negative values are set to zero. This may occur in HG38 reference with alt contigs

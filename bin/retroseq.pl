@@ -103,8 +103,8 @@ MESSAGE
 my $USAGE = <<USAGE;
 Usage: $0 -<command> options
 
-            -discover       Takes a BAM and a set of reference TE (fasta) and calls candidate supporting read pairs (BED output)
-            -call           Takes multiple output of discovery stage and a BAM and outputs a VCF of TE calls
+            -discover       Takes a BAM or CRAM and a set of reference TE (fasta) and calls candidate supporting read pairs (BED output)
+            -call           Takes multiple output of discovery stage and a BAM or CRAM and outputs a VCF of TE calls
             
 NOTE: $0 requires samtools, bcftools, exonerate, unix sort, bedtools to be in the default path
 
@@ -119,7 +119,7 @@ if( $discover )
     ( $bam && $output ) or die <<USAGE;
 Usage: $0 -discover -bam <string> -eref <string> -output <string> [-q <int>] [-id <int>] [-len <int> -noclean]
     
-    -bam        BAM file of paired reads mapped to reference genome
+    -bam        BAM or CRAM file of paired reads mapped to reference genome
     -output     Output file to store candidate supporting reads (required for calling step)
     [-refTEs    Tab file with TE type and BED file of reference elements. These will be used to quickly assign discordant reads the TE types and avoid alignment. Using this will speed up discovery dramatically.]
     [-noclean   Do not remove intermediate output files. Default is to cleanup.]
@@ -178,8 +178,8 @@ USAGE
     
     print qq[\nMin anchor quality: $anchorQ\nMin percent identity: $id\nMin length for hit: $length\n\n];
     
-    #test for samtools
-    RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16], qq[0.1.19] );
+    #test for samtools 1.10 at least,since required_fields is supported by 1.9 and newer (CheckBinary has problems with comparing 1.09 with 1.15)
+    RetroSeq::Utilities::checkBinary( q[samtools], qq[1.10] );
     RetroSeq::Utilities::checkBinary( q[exonerate], qq[2.2.0] ) if( $doAlign );
     RetroSeq::Utilities::checkBinary( q[bedtools] );
     
@@ -190,7 +190,7 @@ elsif( $call )
     ( $bam && $input && $ref && $output ) or die <<USAGE;
 Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [ -filter <BED file> -cleanup -reads <int> -depth <int>]
     
-    -bam            BAM file OR BAM fofn
+    -bam            BAM file OR CRAM file OR BAM fofn
     -input          Either a single output file from the PE discover stage OR a prefix of a set of files from discovery to be combined for calling OR a fofn of discovery stage output files
     -ref            Fasta of reference genome
     -output         Output file name (VCF)
@@ -205,7 +205,7 @@ Usage: $0 -call -bam <string> -input <string> -ref <string> -output <string> [ -
     
 USAGE
     
-    croak qq[Cant find BAM or BAM fofn: $bam] unless -f $bam || -l $bam;
+    croak qq[Cant find BAM or CRAM or BAM fofn: $bam] unless -f $bam || -l $bam;
     
     if( ! -f $input )
     {
@@ -233,8 +233,8 @@ USAGE
     }
 	my $incsoft=defined($incsoftclips)?1:0;
 
-    #test for samtools
-    RetroSeq::Utilities::checkBinary( q[samtools], qq[0.1.16] );
+    #test for samtools 1.10 at least,since required_fields is supported by 1.9 and newer (CheckBinary has problems with comparing 1.09 with 1.15)
+    RetroSeq::Utilities::checkBinary( q[samtools], qq[1.10] );
     RetroSeq::Utilities::checkBinary( q[bcftools] );
     RetroSeq::Utilities::checkBinary( q[bedtools] );
     
@@ -246,12 +246,12 @@ USAGE
         while(my $file = <$ifh> )
         {
             chomp( $file );
-            if( ( -l $file || -f $file ) && ( -l $file.qq[.bai] || -f $file.qq[.bai] ) ){push(@bams, $file);}else{die qq[Cant find BAM input file or BAM index file: $file\n];}
+            if( ( -l $file || -f $file ) && ( -l $file.qq[.bai] || -f $file.qq[.bai] || -f $file.qq[.crai] || -f $file.qq[cram.crai] || -l $file.qq[.crai] || -l $file.qq[cram.crai]) ){push(@bams, $file);}else{die qq[Cant find BAM input file or BAM index file: $file\n];}
         }
         print qq[Found ].scalar(@bams).qq[ BAM files\n\n];
         close( $ifh );
     }
-    else{if( ( -l $bam || -f $bam ) && ( -l $bam.qq[.bai] || -f $bam.qq[.bai] ) ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
+    else{if( ( -l $bam || -f $bam ) && ( -l $bam.qq[.bai] || -f $bam.qq[.bai] || -f $bam.qq[.crai]  || -f $bam.qq[cram.crai] || -l $bam.qq[.crai] || -l $bam.qq[cram.crai]) ){push( @bams, $bam );}else{die qq[Cant find BAM input file or BAM index file: $bam\n];}}
 
     my $sampleName = RetroSeq::Utilities::getBAMSampleName( \@bams );
     print qq[Calling sample $sampleName\n];
@@ -307,7 +307,7 @@ sub _findCandidates
         
         #now go and get the reads from the bam (annoying have to traverse through the bam a second time - but required for reads where the mate is aligned distantly)
         #also dump out their mates as will need these later as anchors
-        open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
+        open( my $bfh, qq[samtools view --input-fmt-option required_fields=0x23F].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
         open( my $dfh, qq[>>$discordantMatesBed] ) or die $!;
         my $currentChr = '';
         my $readsFound = 0;
@@ -977,7 +977,7 @@ sub _getCandidateTEReadNames
     
     print qq[Opening BAM ($bam) and getting initial set of candidate mates....\n];
     
-    open( my $bfh, qq[samtools view ].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
+    open( my $bfh, qq[samtools view --input-fmt-option required_fields=0x3FF].( defined( $readgroups ) ? qq[-R $$.readgroups ] : qq[ ] ).qq[$bam |] ) or die $!;
     my $currentChr = '';
     while ( my $samLine = <$bfh> )
     {
